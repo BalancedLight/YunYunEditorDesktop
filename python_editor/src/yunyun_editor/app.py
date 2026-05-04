@@ -849,6 +849,39 @@ class YunYunEditorApp(tk.Tk):
     def draft_display_name(self) -> str:
         return self.state.chart.song.Title or self.state.chart.song.ID or "Untitled"
 
+    @staticmethod
+    def _format_project_value(value: str) -> str:
+        value = value.strip()
+        return value or "(blank)"
+
+    def _save_overwrite_warning(self, draft_id: str) -> str | None:
+        meta = self.drafts.get_meta(draft_id)
+        if not meta:
+            return None
+        saved_identity = self.drafts.get_saved_song_identity(draft_id)
+        saved_song_id, saved_song_title = saved_identity or (meta.song_id, meta.song_title)
+        mismatches: list[str] = []
+        current_song_id = self.state.chart.song.ID.strip()
+        if current_song_id != saved_song_id.strip():
+            mismatches.append(
+                f'ID: "{self._format_project_value(saved_song_id)}" -> "{self._format_project_value(current_song_id)}"'
+            )
+        current_song_title = self.state.chart.song.Title.strip()
+        if current_song_title != saved_song_title.strip():
+            mismatches.append(
+                f'Name: "{self._format_project_value(saved_song_title)}" -> "{self._format_project_value(current_song_title)}"'
+            )
+        if not mismatches:
+            return None
+        target = 'the "working" entry' if draft_id == CURRENT_DRAFT_ID else f'"{meta.name or "current draft"}"'
+        return (
+            f"Saving now will overwrite {target} instead of creating a new save.\n\n"
+            "The chart's project values changed since this save was loaded:\n"
+            f"{'\n'.join(mismatches)}\n\n"
+            'Use "Save As" if you want a separate draft.\n\n'
+            "Save anyway?"
+        )
+
     def _build_left(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="Song", style="Panel.TLabel").pack(anchor="w", padx=8, pady=(8, 2))
         fields = ["ID", "Audio", "Title", "Artist", "Lyricist", "Composer", "Arranger"]
@@ -963,7 +996,7 @@ class YunYunEditorApp(tk.Tk):
         self.event_trees: dict[str, ttk.Treeview] = {}
         for kind, columns in [("bpm", ("Tick", "BPM")), ("ts", ("Tick", "Num", "Den")), ("phase", ("Tick",))]:
             frame = ttk.Frame(self.event_tabs, style="Panel.TFrame")
-            self.event_tabs.add(frame, text={"bpm": "BPM", "ts": "Time Sig", "phase": "Phase"}[kind])
+            self.event_tabs.add(frame, text={"bpm": "BPM", "ts": "Crotchets Per Bar", "phase": "Level End"}[kind])
             tree = ttk.Treeview(frame, columns=columns, show="headings", height=8)
             for col in columns:
                 tree.heading(col, text=col)
@@ -1101,7 +1134,7 @@ class YunYunEditorApp(tk.Tk):
         try:
             self.load_imported_mod(parse_zip(path))
             self.canvas.focus_set()
-            self.quick_save_draft(name=f"Imported - {self.draft_display_name()}", show_message=False)
+            self.quick_save_draft(name=f"Imported - {self.draft_display_name()}", show_message=False, confirm_overwrite=False)
             self.set_status(f'Imported "{Path(path).name}" and saved a resumable draft.', temporary=True)
         except Exception as exc:
             messagebox.showerror("Import failed", str(exc))
@@ -1156,11 +1189,17 @@ class YunYunEditorApp(tk.Tk):
         self.canvas.focus_set()
         self.set_status(f'Exported "{Path(path).name}". Space will still play/pause.', temporary=True)
 
-    def quick_save_draft(self, name: str | None = None, show_message: bool = True) -> None:
+    def quick_save_draft(self, name: str | None = None, show_message: bool = True, confirm_overwrite: bool = True) -> None:
         draft_id = self.current_draft_id
         draft_name = name or self.current_draft_name or f"Working - {self.draft_display_name()}"
         if not draft_id:
             draft_id = CURRENT_DRAFT_ID
+        if confirm_overwrite:
+            warning = self._save_overwrite_warning(draft_id)
+            if warning and not messagebox.askyesno("Overwrite current save?", warning):
+                self.canvas.focus_set()
+                self.set_status("Save canceled.", temporary=True)
+                return
         self.save_draft_to(draft_id, draft_name, show_message=show_message)
 
     def save_draft_as(self) -> None:
@@ -1446,7 +1485,7 @@ class YunYunEditorApp(tk.Tk):
         if not tab_id:
             return None
         tab_text = self.event_tabs.tab(tab_id, "text")
-        kind = {"BPM": "bpm", "Time Sig": "ts", "Phase": "phase"}.get(tab_text)
+        kind = {"BPM": "bpm", "Crotchets Per Bar": "ts", "Level End": "phase"}.get(tab_text)
         if not kind:
             return None
         selection = self.event_trees[kind].selection()

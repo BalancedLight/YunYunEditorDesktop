@@ -26,7 +26,8 @@ class DraftMeta:
     id: str
     name: str
     updated_at: float
-    song_id: str
+    song_id: str = ""
+    song_title: str = ""
 
 
 class DraftStore:
@@ -50,6 +51,22 @@ class DraftStore:
 
     def get_meta(self, draft_id: str) -> DraftMeta | None:
         return next((item for item in self.list() if item.id == draft_id), None)
+
+    def get_saved_song_identity(self, draft_id: str) -> tuple[str, str] | None:
+        meta = self.get_meta(draft_id)
+        if not meta:
+            return None
+        if meta.song_id or meta.song_title:
+            if meta.song_title:
+                return meta.song_id, meta.song_title
+        song_path = self.root / draft_id / "song.json"
+        if not song_path.exists():
+            return meta.song_id, meta.song_title
+        try:
+            song = parse_song_json(song_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return meta.song_id, meta.song_title
+        return song.ID, song.Title
 
     def _write_index(self, items: list[DraftMeta]) -> None:
         self._atomic_write_text(self.index_path, json.dumps([item.__dict__ for item in items], indent=2))
@@ -79,7 +96,7 @@ class DraftStore:
         if audio_filename and audio_bytes:
             self._atomic_write_bytes(folder / audio_filename, audio_bytes)
         items = [item for item in self.list() if item.id != draft_id]
-        meta = DraftMeta(draft_id, name, time.time(), song.ID)
+        meta = DraftMeta(draft_id, name, time.time(), song.ID, song.Title)
         items.append(meta)
         self._write_index(sorted(items, key=lambda item: item.updated_at, reverse=True))
         return meta

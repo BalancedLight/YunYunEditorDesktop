@@ -82,12 +82,18 @@ class AudioEngine:
 
     def load_array(self, samples: np.ndarray, sample_rate: int) -> None:
         samples = self._as_stereo(samples)
+        stream_to_close = None
         with self.lock:
+            sample_rate = int(sample_rate)
+            if self.stream is not None and sample_rate != self.sample_rate:
+                stream_to_close = self.stream
+                self.stream = None
             self.stop()
             self.samples = samples.astype(np.float32, copy=False)
-            self.sample_rate = int(sample_rate)
+            self.sample_rate = sample_rate
             self.position = 0.0
             self.sfx_voices.clear()
+        self._close_stream(stream_to_close)
 
     def load_bytes(self, audio_bytes: bytes) -> None:
         try:
@@ -167,6 +173,18 @@ class AudioEngine:
             callback=self._callback,
         )
         self.stream.start()
+
+    def _close_stream(self, stream) -> None:
+        if stream is None:
+            return
+        try:
+            stream.stop()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
 
     def _callback(self, outdata, frames: int, _time, status) -> None:
         del status

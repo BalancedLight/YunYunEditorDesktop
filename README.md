@@ -34,7 +34,7 @@ python -m venv .venv
 
 - Import existing YunYunLoader mod ZIPs.
 - Import common audio formats and normalize them to OGG/Vorbis for export.
-- Edit notes, holds, rush notes, BPM, time signatures, and phase events.
+- Edit notes, holds, rush notes, BPM, time signatures, and end level (phase) events.
 - Waveform background, bar/beat labels, snap controls, speed control, hit SFX, conduct mode, undo/redo, drafts, and ZIP export.
 - Drafts are stored in the local app-data folder and the most recent draft resumes on launch.
 
