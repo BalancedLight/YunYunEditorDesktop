@@ -588,8 +588,8 @@ class YunYunEditorApp(tk.Tk):
         self.bind("<BackSpace>", lambda _e: self.delete_selection())
         self.bind(",", lambda _e: self.nudge_selected(-SNAP_DIVISIONS[self.state.snap_division], 0))
         self.bind(".", lambda _e: self.nudge_selected(SNAP_DIVISIONS[self.state.snap_division], 0))
-        self.bind("<", lambda _e: self.nudge_selected(-480, 0))
-        self.bind(">", lambda _e: self.nudge_selected(480, 0))
+        self.bind("<less>", lambda _e: self.nudge_selected(-480, 0))
+        self.bind("<greater>", lambda _e: self.nudge_selected(480, 0))
         self.bind("[", lambda _e: self.step_snap_division(-1))
         self.bind("]", lambda _e: self.step_snap_division(1))
         for key, tool in [("1", "single"), ("2", "hold"), ("3", "rush"), ("4", "eraser"), ("v", "select")]:
