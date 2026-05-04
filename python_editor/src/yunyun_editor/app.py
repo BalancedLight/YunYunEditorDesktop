@@ -885,6 +885,16 @@ class YunYunEditorApp(tk.Tk):
         self.level_score_offset_entry.bind("<FocusOut>", lambda _e, v=var: self.update_level_score_offset(v.get()))
         self.level_score_offset_entry.bind("<Return>", lambda _e, v=var: self.update_level_score_offset(v.get()))
 
+        row = ttk.Frame(parent, style="Panel.TFrame")
+        row.pack(fill=tk.X, padx=8, pady=2)
+        ttk.Label(row, text="Init BPM", width=9, style="Panel.TLabel").pack(side=tk.LEFT)
+        var = tk.StringVar()
+        self.vars["level_init_bpm"] = var
+        self.level_init_bpm_entry = ttk.Entry(row, textvariable=var)
+        self.level_init_bpm_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.level_init_bpm_entry.bind("<FocusOut>", lambda _e, v=var: self.update_level_init_bpm(v.get()))
+        self.level_init_bpm_entry.bind("<Return>", lambda _e, v=var: self.update_level_init_bpm(v.get()))
+
         ttk.Separator(parent).pack(fill=tk.X, pady=6)
         ttk.Label(parent, text="Drafts", style="Panel.TLabel").pack(anchor="w", padx=8)
         self.draft_list = tk.Listbox(parent, bg=BG2, fg=FG, height=8, selectbackground="#254766", borderwidth=0)
@@ -1288,6 +1298,35 @@ class YunYunEditorApp(tk.Tk):
         self.refresh_all()
         self.set_status(f"Score offset {format_score_offset(offset)} s.", temporary=True)
 
+    def update_level_init_bpm(self, value: str) -> None:
+        level = self.state.active_level()
+        if not level:
+            self.refresh_level_metadata()
+            return
+        raw = value.strip()
+        try:
+            bpm = float(raw)
+        except ValueError:
+            self.set_status("Init BPM must be a number.", temporary=True)
+            self.refresh_level_metadata()
+            return
+        if not math.isfinite(bpm):
+            self.set_status("Init BPM must be finite.", temporary=True)
+            self.refresh_level_metadata()
+            return
+        if bpm <= 0:
+            self.set_status("Init BPM must be greater than zero.", temporary=True)
+            self.refresh_level_metadata()
+            return
+        if level.InitBpm.Bpm == bpm:
+            self.refresh_level_metadata()
+            return
+        self.push_history("Edit level metadata")
+        level.InitBpm.Bpm = bpm
+        self.sync_audio_to_playhead()
+        self.refresh_all()
+        self.set_status(f"Init BPM {format_bpm(bpm)}.", temporary=True)
+
     def set_tool(self, tool: str) -> None:
         self.state.tool = tool
         self.vars["tool"].set(tool)
@@ -1516,20 +1555,29 @@ class YunYunEditorApp(tk.Tk):
                 var.set(getattr(song, field_name))
 
     def refresh_level_metadata(self) -> None:
-        var = self.vars.get("level_score_offset")
-        entry = getattr(self, "level_score_offset_entry", None)
-        if not var or entry is None:
+        offset_var = self.vars.get("level_score_offset")
+        offset_entry = getattr(self, "level_score_offset_entry", None)
+        bpm_var = self.vars.get("level_init_bpm")
+        bpm_entry = getattr(self, "level_init_bpm_entry", None)
+        if not offset_var or offset_entry is None or not bpm_var or bpm_entry is None:
             return
         level = self.state.active_level()
         if not level:
-            if var.get():
-                var.set("")
-            entry.state(["disabled"])
+            if offset_var.get():
+                offset_var.set("")
+            if bpm_var.get():
+                bpm_var.set("")
+            offset_entry.state(["disabled"])
+            bpm_entry.state(["disabled"])
             return
-        text = format_score_offset(level.ScoreOffset)
-        if var.get() != text:
-            var.set(text)
-        entry.state(["!disabled"])
+        offset_text = format_score_offset(level.ScoreOffset)
+        if offset_var.get() != offset_text:
+            offset_var.set(offset_text)
+        bpm_text = format_bpm(level.InitBpm.Bpm)
+        if bpm_var.get() != bpm_text:
+            bpm_var.set(bpm_text)
+        offset_entry.state(["!disabled"])
+        bpm_entry.state(["!disabled"])
 
     def refresh_levels(self) -> None:
         current = self.state.chart.active_level_path
