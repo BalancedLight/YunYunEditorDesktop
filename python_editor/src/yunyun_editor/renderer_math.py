@@ -23,6 +23,14 @@ class Viewport:
     playhead_sec: float
 
 
+@dataclass(frozen=True)
+class TimelineEventLabel:
+    tick: int
+    color: str
+    label: str
+    stack_index: int
+
+
 def seconds_to_y(sec: float, viewport: Viewport) -> float:
     return viewport.playhead_y - (sec - viewport.playhead_sec) * viewport.pixels_per_second
 
@@ -49,3 +57,12 @@ def pick_lane(x: float, viewport: Viewport) -> int:
     idx = int((x - viewport.playfield_x) // viewport.lane_width)
     return max(viewport.lane_start, min(viewport.lane_start + viewport.lane_count - 1, viewport.lane_start + idx))
 
+
+def stack_timeline_event_labels(events: list[tuple[int, str, str]]) -> list[TimelineEventLabel]:
+    counts_by_tick: dict[int, int] = {}
+    laid_out: list[TimelineEventLabel] = []
+    for tick, color, label in events:
+        stack_index = counts_by_tick.get(tick, 0)
+        counts_by_tick[tick] = stack_index + 1
+        laid_out.append(TimelineEventLabel(tick=tick, color=color, label=label, stack_index=stack_index))
+    return laid_out

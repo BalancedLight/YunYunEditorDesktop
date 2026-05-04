@@ -49,7 +49,17 @@ from .model import (
     empty_level,
     new_id,
 )
-from .renderer_math import NOTE_HEIGHT, Viewport, hold_visible, lane_to_x, pick_lane, seconds_to_y, tick_to_y, y_to_seconds
+from .renderer_math import (
+    NOTE_HEIGHT,
+    Viewport,
+    hold_visible,
+    lane_to_x,
+    pick_lane,
+    seconds_to_y,
+    stack_timeline_event_labels,
+    tick_to_y,
+    y_to_seconds,
+)
 from .timing import SNAP_DIVISIONS, build_tempo_map, seconds_to_tick, tick_to_seconds
 from .waveform import WaveformEnvelope, load_waveform_bytes
 
@@ -219,20 +229,20 @@ class ChartCanvas(tk.Canvas):
                 bar_number_base += max(0, (next_tick - ts.Tick + bar - 1) // bar)
 
     def draw_events(self, vp: Viewport, level: LevelJson, tempo_map) -> None:
-        def marker(tick: int, color: str, label: str) -> None:
-            y = tick_to_y(tick, vp, tempo_map, level.ScoreOffset)
-            if -12 <= y <= vp.height + 12:
-                self.create_rectangle(0, y - 1, self.LEFT_GUTTER - 4, y + 1, fill=color, outline="")
-                self.create_text(4, y - 8, text=label, anchor="w", fill=DIM, font=("Consolas", 9))
+        events: list[tuple[int, str, str]] = [
+            (level.InitBpm.Tick, ACCENT, f"{format_bpm(level.InitBpm.Bpm)} BPM"),
+            (level.InitTimeSignature.Tick, RUSH, f"{level.InitTimeSignature.Numerator}/{level.InitTimeSignature.Denominator}"),
+        ]
+        events.extend((ev.Tick, ACCENT, f"{format_bpm(ev.Bpm)} BPM") for ev in level.BpmChangeEvents)
+        events.extend((ev.Tick, RUSH, f"{ev.Numerator}/{ev.Denominator}") for ev in level.TimeSignature)
+        events.extend((ev.Tick, EDGE, "phase") for ev in level.PhaseChangeEvents)
 
-        marker(level.InitBpm.Tick, ACCENT, f"{format_bpm(level.InitBpm.Bpm)} BPM")
-        for ev in level.BpmChangeEvents:
-            marker(ev.Tick, ACCENT, f"{format_bpm(ev.Bpm)} BPM")
-        marker(level.InitTimeSignature.Tick, RUSH, f"{level.InitTimeSignature.Numerator}/{level.InitTimeSignature.Denominator}")
-        for ev in level.TimeSignature:
-            marker(ev.Tick, RUSH, f"{ev.Numerator}/{ev.Denominator}")
-        for ev in level.PhaseChangeEvents:
-            marker(ev.Tick, EDGE, "phase")
+        for event in stack_timeline_event_labels(events):
+            y = tick_to_y(event.tick, vp, tempo_map, level.ScoreOffset)
+            if -12 <= y <= vp.height + 12:
+                text_y = y - 8 - (event.stack_index * 12)
+                self.create_rectangle(0, y - 1, self.LEFT_GUTTER - 4, y + 1, fill=event.color, outline="")
+                self.create_text(4, text_y, text=event.label, anchor="w", fill=event.color, font=("Consolas", 9))
 
     def draw_notes(self, vp: Viewport, level: LevelJson, tempo_map) -> None:
         for note in level.HoldNotes:
