@@ -1,5 +1,7 @@
-node_modules
-dist
 .DS_Store
 *.log
-.vite
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/

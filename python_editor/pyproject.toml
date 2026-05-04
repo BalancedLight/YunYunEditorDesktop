@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yunyun-editor-desktop"
+version = "0.1.0"
+description = "Tkinter desktop editor for YunYunLoader chart mods."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "pydub>=0.25.1",
+  "sounddevice>=0.4.6",
+  "soundfile>=0.12.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+yunyun-editor = "yunyun_editor.__main__:main"
