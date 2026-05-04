@@ -3,15 +3,21 @@ from __future__ import annotations
 from yunyun_editor.editor_state import (
     ChartState,
     EditorState,
+    MIN_LONG_NOTE_DURATION,
     add_bpm_change,
     add_phase_change,
     add_time_signature_change,
+    copy_selected_notes,
     create_rush,
     create_single,
     conduct_lane_for_key,
     move_selection_to,
+    paste_notes_at_tick,
     place_conduct_note,
+    resize_long_note_tail,
     select_note_ids_in_tick_lane_box,
+    selected_notes,
+    selection_after_note_click,
 )
 from yunyun_editor.model import BpmEvent, LevelJson, TimeSignatureEvent
 
@@ -72,6 +78,61 @@ def test_rush_move_clamps_to_two_lane_span() -> None:
 
     assert rush.Tick == 240
     assert rush.Lane == 4
+
+
+def test_clicking_selected_note_preserves_multi_selection_without_shift() -> None:
+    selection = {"a", "b"}
+
+    assert selection_after_note_click(selection, "a", additive=False) == {"a", "b"}
+    assert selection_after_note_click(selection, "c", additive=False) == {"c"}
+
+
+def test_paste_selected_notes_anchors_first_note_to_snapped_playhead() -> None:
+    level = LevelJson()
+    editor = editor_with_level(level)
+    editor.playhead_tick = 731
+    editor.snap_enabled = True
+    editor.snap_division = "1/8"
+
+    rush = create_rush(level, 100, 340, 4)
+    single = create_single(level, 220, 2)
+
+    clipboard = copy_selected_notes(level, {rush.id, single.id})
+    pasted_ids = paste_notes_at_tick(level, clipboard, editor.snapped_tick(editor.playhead_tick))
+    pasted = selected_notes(level, pasted_ids)
+    pasted.sort(key=lambda item: (item[1].Tick, item[1].Lane, item[0]))
+
+    assert len(pasted_ids) == 2
+    assert {note.id for _kind, note in pasted}.isdisjoint({rush.id, single.id})
+    assert pasted[0][0] == "rush"
+    assert pasted[0][1].Tick == 720
+    assert pasted[0][1].Lane == 4
+    assert pasted[0][1].Duration == rush.Duration
+    assert pasted[1][0] == "single"
+    assert pasted[1][1].Tick == 840
+    assert pasted[1][1].Lane == 2
+
+
+def test_resize_long_note_tail_keeps_head_and_updates_duration() -> None:
+    level = LevelJson()
+    rush = create_rush(level, 100, 340, 4)
+
+    changed = resize_long_note_tail(level, rush.id, 580)
+
+    assert changed
+    assert rush.Tick == 100
+    assert rush.Duration == 480
+
+
+def test_resize_long_note_tail_clamps_to_minimum_duration() -> None:
+    level = LevelJson()
+    rush = create_rush(level, 100, 340, 4)
+
+    changed = resize_long_note_tail(level, rush.id, 120)
+
+    assert changed
+    assert rush.Tick == 100
+    assert rush.Duration == MIN_LONG_NOTE_DURATION
 
 
 def test_tick_lane_box_selection_handles_holds_and_rush_spans() -> None:

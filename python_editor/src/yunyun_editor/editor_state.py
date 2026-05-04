@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -25,6 +26,7 @@ from .timing import SNAP_DIVISIONS, snap_tick
 
 
 Tool = str
+MIN_LONG_NOTE_DURATION = 60
 
 
 @dataclass
@@ -226,7 +228,7 @@ def place_conduct_note(editor: EditorState, key: str) -> SingleNote | None:
 
 def create_hold(level: LevelJson, tick_from: int, tick_to: int, lane: int) -> HoldNote:
     tick_start = max(0, min(int(tick_from), int(tick_to)))
-    duration = max(60, abs(int(tick_to) - int(tick_from)))
+    duration = max(MIN_LONG_NOTE_DURATION, abs(int(tick_to) - int(tick_from)))
     note = HoldNote(Tick=tick_start, Lane=clamp_lane(lane), Type=0, Duration=duration)
     level.HoldNotes.append(note)
     return note
@@ -234,10 +236,26 @@ def create_hold(level: LevelJson, tick_from: int, tick_to: int, lane: int) -> Ho
 
 def create_rush(level: LevelJson, tick_from: int, tick_to: int, lane: int) -> RushNote:
     tick_start = max(0, min(int(tick_from), int(tick_to)))
-    duration = max(60, abs(int(tick_to) - int(tick_from)))
+    duration = max(MIN_LONG_NOTE_DURATION, abs(int(tick_to) - int(tick_from)))
     note = RushNote(Tick=tick_start, Lane=clamp_rush_lane(lane), Type=0, Duration=duration)
     level.RushNotes.append(note)
     return note
+
+
+def clamp_long_note_tail_tick(start_tick: int, target_tick: int) -> int:
+    return max(int(start_tick) + MIN_LONG_NOTE_DURATION, int(target_tick))
+
+
+def resize_long_note_tail(level: LevelJson, note_id: str, target_tick: int) -> bool:
+    kind, note = find_note(level, note_id)
+    if kind not in ("hold", "rush") or not isinstance(note, HoldNote):
+        return False
+    next_tail_tick = clamp_long_note_tail_tick(note.Tick, target_tick)
+    next_duration = next_tail_tick - note.Tick
+    if note.Duration == next_duration:
+        return False
+    note.Duration = next_duration
+    return True
 
 
 def delete_notes(level: LevelJson, ids: Iterable[str]) -> None:
@@ -286,6 +304,47 @@ def nudge_selection(level: LevelJson, ids: Iterable[str], delta_tick: int = 0, d
 def selected_notes(level: LevelJson, ids: Iterable[str]) -> list[tuple[str, SingleNote]]:
     id_set = set(ids)
     return [(kind, note) for kind, note in iter_notes(level) if note.id in id_set]
+
+
+def selection_after_note_click(selection: set[str], note_id: str, additive: bool) -> set[str]:
+    if additive:
+        next_selection = set(selection)
+        if note_id in next_selection:
+            next_selection.remove(note_id)
+        else:
+            next_selection.add(note_id)
+        return next_selection
+    if note_id in selection:
+        return set(selection)
+    return {note_id}
+
+
+def copy_selected_notes(level: LevelJson, ids: Iterable[str]) -> list[tuple[str, SingleNote]]:
+    kind_order = {"single": 0, "hold": 1, "rush": 2}
+    notes = selected_notes(level, ids)
+    notes.sort(key=lambda item: (item[1].Tick, item[1].Lane, kind_order.get(item[0], 99), item[1].id))
+    return [(kind, copy.deepcopy(note)) for kind, note in notes]
+
+
+def paste_notes_at_tick(level: LevelJson, notes: list[tuple[str, SingleNote]], target_tick: int) -> list[str]:
+    if not notes:
+        return []
+    anchor_tick = min(note.Tick for _kind, note in notes)
+    delta_tick = int(target_tick) - int(anchor_tick)
+    note_lists = {
+        "single": level.SingleNotes,
+        "hold": level.HoldNotes,
+        "rush": level.RushNotes,
+    }
+    pasted_ids: list[str] = []
+    for kind, template in notes:
+        note = copy.deepcopy(template)
+        note.id = new_id()
+        note.Tick = max(0, int(note.Tick) + delta_tick)
+        note.Lane = clamp_rush_lane(note.Lane) if kind == "rush" else clamp_lane(note.Lane)
+        note_lists[kind].append(note)
+        pasted_ids.append(note.id)
+    return pasted_ids
 
 
 def select_note_ids_in_tick_lane_box(

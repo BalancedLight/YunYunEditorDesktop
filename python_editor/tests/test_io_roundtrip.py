@@ -14,8 +14,11 @@ def test_example_folder_roundtrips_without_editor_ids(tmp_path: Path) -> None:
     assert "level1.json" in mod.levels
     assert mod.levels["level1.json"].SingleNotes[0].id
 
+    mod.levels["level1.json"].ScoreOffset = 0.03998
+
     text = stringify_level(mod.levels["level1.json"])
     assert '"id"' not in text
+    assert '"ScoreOffset": 0.03998' in text
 
     zip_bytes = build_zip_bytes(mod.song, mod.levels, mod.audio_filename, mod.audio_bytes, "ExampleSong")
     zip_path = tmp_path / "example.zip"
@@ -25,4 +28,5 @@ def test_example_folder_roundtrips_without_editor_ids(tmp_path: Path) -> None:
     assert reparsed.song.ID == mod.song.ID
     assert set(reparsed.levels) == set(mod.levels)
     assert reparsed.audio_bytes == mod.audio_bytes
+    assert reparsed.levels["level1.json"].ScoreOffset == 0.03998
 

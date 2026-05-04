@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 from pathlib import Path
 import traceback
 import tkinter as tk
@@ -14,9 +15,12 @@ from .drafts import CURRENT_DRAFT_ID, DraftStore
 from .editor_state import (
     ChartState,
     EditorState,
+    MIN_LONG_NOTE_DURATION,
     add_bpm_change,
     add_phase_change,
     add_time_signature_change,
+    clamp_long_note_tail_tick,
+    copy_selected_notes,
     create_hold,
     create_rush,
     create_single,
@@ -26,8 +30,11 @@ from .editor_state import (
     find_note,
     iter_notes,
     move_selection_to,
+    paste_notes_at_tick,
     place_conduct_note,
+    resize_long_note_tail,
     select_note_ids_in_tick_lane_box,
+    selection_after_note_click,
     selected_notes,
 )
 from .io import ImportedMod, build_zip_bytes, load_example_folder, parse_zip, sanitize_folder_name
@@ -266,6 +273,19 @@ class ChartCanvas(tk.Canvas):
         if note.id in self.app.state.selection:
             self.create_rectangle(x + pad - 2, y - NOTE_HEIGHT / 2 - 2, x + vp.lane_width - pad + 2, y + NOTE_HEIGHT / 2 + 2, outline=ACCENT)
 
+    def draw_long_note_tail(self, left: float, right: float, y: float, fill: str, selected: bool) -> None:
+        tail_half_h = max(4.0, NOTE_HEIGHT * 0.22)
+        inset = 4.0
+        top = y - tail_half_h
+        bottom = y + tail_half_h
+        self.create_rectangle(left + inset, top, right - inset, bottom, fill=fill, outline="")
+        if selected:
+            self.create_rectangle(left + inset - 2, top - 2, right - inset + 2, bottom + 2, outline=ACCENT)
+
+    def long_note_tail_hit(self, x: int, y: int, left: float, right: float, tail_y: float) -> bool:
+        half_h = NOTE_HEIGHT / 2 + 2
+        return left <= x < right and abs(y - tail_y) <= half_h
+
     def draw_hold(self, vp: Viewport, level: LevelJson, tempo_map, note: HoldNote) -> None:
         if not (LANE_MIN <= note.Lane <= LANE_MAX):
             return
@@ -278,6 +298,8 @@ class ChartCanvas(tk.Canvas):
         rw = vp.lane_width - pad * 2
         fill = "#7d579f" if note.Lane in (LANE_MIN, LANE_MAX) else "#2b8949"
         self.create_rectangle(x + pad + rw * 0.25, min(y1, y2), x + pad + rw * 0.75, max(y1, y2), fill=fill, outline="")
+        tail_fill = EDGE if note.Lane in (LANE_MIN, LANE_MAX) else MID
+        self.draw_long_note_tail(x + pad, x + vp.lane_width - pad, y2, tail_fill, note.id in self.app.state.selection)
         self.draw_single(vp, level, tempo_map, note)
 
     def draw_rush(self, vp: Viewport, level: LevelJson, tempo_map, note: RushNote) -> None:
@@ -291,6 +313,7 @@ class ChartCanvas(tk.Canvas):
         x2 = lane_to_x(note.Lane + 2, vp)
         pad = 6
         self.create_rectangle(x1 + pad + (x2 - x1) * 0.15, min(y1, y2), x2 - pad - (x2 - x1) * 0.15, max(y1, y2), fill="#8a602d", outline="")
+        self.draw_long_note_tail(x1 + pad, x2 - pad, y2, RUSH, note.id in self.app.state.selection)
         self.create_rectangle(x1 + pad, y1 - NOTE_HEIGHT / 2, x2 - pad, y1 + NOTE_HEIGHT / 2, fill=RUSH, outline="")
         if note.id in self.app.state.selection:
             self.create_rectangle(x1 + pad - 2, y1 - NOTE_HEIGHT / 2 - 2, x2 - pad + 2, y1 + NOTE_HEIGHT / 2 + 2, outline=ACCENT)
@@ -300,11 +323,44 @@ class ChartCanvas(tk.Canvas):
             return
         if self.drag.get("kind") == "box":
             x1 = self.drag["start_x"]
-            y1 = self.drag["start_y"]
+            y1 = tick_to_y(self.drag["start_tick"], vp, tempo_map, level.ScoreOffset)
             x2 = self.drag.get("current_x", x1)
-            y2 = self.drag.get("current_y", y1)
+            y2 = tick_to_y(self.drag.get("current_tick", self.drag["start_tick"]), vp, tempo_map, level.ScoreOffset)
             self.create_rectangle(x1, y1, x2, y2, fill="#6aa9ff", outline="", stipple="gray75")
             self.create_rectangle(x1, y1, x2, y2, outline=ACCENT, dash=(3, 2))
+            return
+        if self.drag.get("kind") == "resize_tail":
+            y1 = tick_to_y(self.drag["start_tick"], vp, tempo_map, level.ScoreOffset)
+            y2 = tick_to_y(self.drag["current_tick"], vp, tempo_map, level.ScoreOffset)
+            lane = self.drag["lane"]
+            pad = 6
+            if self.drag["note_kind"] == "hold":
+                x = lane_to_x(lane, vp)
+                rw = vp.lane_width - pad * 2
+                self.create_rectangle(
+                    x + pad + rw * 0.25,
+                    min(y1, y2),
+                    x + pad + rw * 0.75,
+                    max(y1, y2),
+                    fill=ACCENT,
+                    outline="",
+                    stipple="gray50",
+                )
+                tail_fill = EDGE if lane in (LANE_MIN, LANE_MAX) else MID
+                self.draw_long_note_tail(x + pad, x + vp.lane_width - pad, y2, tail_fill, True)
+            else:
+                x1 = lane_to_x(lane, vp)
+                x2 = lane_to_x(lane + 2, vp)
+                self.create_rectangle(
+                    x1 + pad + (x2 - x1) * 0.15,
+                    min(y1, y2),
+                    x2 - pad - (x2 - x1) * 0.15,
+                    max(y1, y2),
+                    fill=RUSH,
+                    outline="",
+                    stipple="gray50",
+                )
+                self.draw_long_note_tail(x1 + pad, x2 - pad, y2, RUSH, True)
             return
         if self.drag.get("kind") != "place":
             return
@@ -337,6 +393,17 @@ class ChartCanvas(tk.Canvas):
     def hit_test(self, x: int, y: int, vp: Viewport, level: LevelJson):
         tempo_map = build_tempo_map(level.InitBpm, level.BpmChangeEvents)
         half_h = NOTE_HEIGHT / 2 + 2
+        for note in reversed(level.RushNotes):
+            px1 = lane_to_x(note.Lane, vp)
+            px2 = lane_to_x(note.Lane + 2, vp)
+            py2 = tick_to_y(note.Tick + note.Duration, vp, tempo_map, level.ScoreOffset)
+            if self.long_note_tail_hit(x, y, px1 + 6, px2 - 6, py2):
+                return "rush-tail", note
+        for note in reversed(level.HoldNotes):
+            px = lane_to_x(note.Lane, vp)
+            py2 = tick_to_y(note.Tick + note.Duration, vp, tempo_map, level.ScoreOffset)
+            if self.long_note_tail_hit(x, y, px + 6, px + vp.lane_width - 6, py2):
+                return "hold-tail", note
         for note in reversed(level.SingleNotes):
             px = lane_to_x(note.Lane, vp)
             py = tick_to_y(note.Tick, vp, tempo_map, level.ScoreOffset)
@@ -377,15 +444,23 @@ class ChartCanvas(tk.Canvas):
             self.app.refresh_all()
             return
         if hit:
-            if not (event.state & 0x0001):
-                self.app.state.select_only(hit[1].id)
+            additive = bool(event.state & 0x0001)
+            self.app.state.selection = selection_after_note_click(self.app.state.selection, hit[1].id, additive)
+            if additive:
+                self.app.refresh_all()
+                return
+            if hit[0] in ("hold-tail", "rush-tail"):
+                self.drag = {
+                    "kind": "resize_tail",
+                    "note_id": hit[1].id,
+                    "note_kind": "rush" if hit[0] == "rush-tail" else "hold",
+                    "lane": hit[1].Lane,
+                    "start_tick": hit[1].Tick,
+                    "current_tick": hit[1].Tick + hit[1].Duration,
+                }
             else:
-                if hit[1].id in self.app.state.selection:
-                    self.app.state.selection.remove(hit[1].id)
-                else:
-                    self.app.state.selection.add(hit[1].id)
-            lane, tick = self.pick_cell(x, y, vp, level)
-            self.drag = {"kind": "move", "anchor_id": hit[1].id, "start_lane": lane, "start_tick": tick}
+                lane, tick = self.pick_cell(x, y, vp, level)
+                self.drag = {"kind": "move", "anchor_id": hit[1].id, "start_lane": lane, "start_tick": tick}
             self.app.refresh_all()
             return
         lane, tick = self.pick_cell(x, y, vp, level)
@@ -403,8 +478,10 @@ class ChartCanvas(tk.Canvas):
                 "kind": "box",
                 "start_x": x,
                 "start_y": y,
+                "start_tick": self.pick_cell(x, y, vp, level)[1],
                 "current_x": x,
                 "current_y": y,
+                "current_tick": self.pick_cell(x, y, vp, level)[1],
                 "additive": bool(event.state & 0x0001),
             }
 
@@ -417,16 +494,20 @@ class ChartCanvas(tk.Canvas):
             return
         x, y = self.event_xy(event)
         lane, tick = self.pick_cell(x, y, vp, level)
-        tick = self.app.state.snapped_tick(tick)
         if self.drag["kind"] == "place":
-            self.drag["current_tick"] = tick
+            self.drag["current_tick"] = self.app.state.snapped_tick(tick)
+            self.redraw()
+        elif self.drag["kind"] == "resize_tail":
+            snapped_tick = self.app.state.snapped_tick(tick)
+            self.drag["current_tick"] = clamp_long_note_tail_tick(self.drag["start_tick"], snapped_tick)
             self.redraw()
         elif self.drag["kind"] == "move":
             self.drag["target_lane"] = lane
-            self.drag["target_tick"] = tick
+            self.drag["target_tick"] = self.app.state.snapped_tick(tick)
         elif self.drag["kind"] == "box":
             self.drag["current_x"] = x
             self.drag["current_y"] = y
+            self.drag["current_tick"] = tick
             self.redraw()
 
     def on_mouse_up(self, event: tk.Event) -> None:
@@ -443,6 +524,16 @@ class ChartCanvas(tk.Canvas):
             else:
                 note = create_rush(level, self.drag["start_tick"], self.drag["current_tick"], self.drag["lane"])
             self.app.state.select_only(note.id)
+        elif self.drag["kind"] == "resize_tail":
+            vp = self.viewport()
+            if vp:
+                _lane, tick = self.pick_cell(*self.event_xy(event), vp, level)
+                tick = self.app.state.snapped_tick(tick)
+                tick = max(self.drag["start_tick"] + MIN_LONG_NOTE_DURATION, tick)
+                kind, note = find_note(level, self.drag["note_id"])
+                if kind in ("hold", "rush") and isinstance(note, HoldNote) and note.Tick + note.Duration != tick:
+                    self.app.push_history("Resize long note")
+                    resize_long_note_tail(level, self.drag["note_id"], tick)
         elif self.drag["kind"] == "move":
             vp = self.viewport()
             if vp:
@@ -456,16 +547,16 @@ class ChartCanvas(tk.Canvas):
             if vp:
                 x1 = int(self.drag["start_x"])
                 y1 = int(self.drag["start_y"])
-                x2, y2 = self.event_xy(event)
+                x2 = int(self.drag.get("current_x", x1))
+                y2 = int(self.drag.get("current_y", y1))
                 if abs(x2 - x1) < 4 and abs(y2 - y1) < 4:
                     if not self.drag.get("additive"):
                         self.app.state.clear_selection()
                 else:
                     lane_a = pick_lane(x1, vp)
                     lane_b = pick_lane(x2, vp)
-                    tempo_map = build_tempo_map(level.InitBpm, level.BpmChangeEvents)
-                    tick_a = seconds_to_tick(y_to_seconds(y1, vp), tempo_map, level.ScoreOffset)
-                    tick_b = seconds_to_tick(y_to_seconds(y2, vp), tempo_map, level.ScoreOffset)
+                    tick_a = int(self.drag["start_tick"])
+                    tick_b = int(self.drag.get("current_tick", tick_a))
                     ids = select_note_ids_in_tick_lane_box(level, tick_a, tick_b, lane_a, lane_b)
                     if self.drag.get("additive"):
                         self.app.state.selection.update(ids)
@@ -506,6 +597,7 @@ class YunYunEditorApp(tk.Tk):
         self.current_draft_name = ""
         self.status_after_id: str | None = None
         self.conduct_keys_down: set[str] = set()
+        self.note_clipboard: list[tuple[str, SingleNote]] = []
         self.vars: dict[str, tk.Variable] = {}
         self._build_style()
         self._build_ui()
@@ -584,6 +676,10 @@ class YunYunEditorApp(tk.Tk):
         self.bind_all("<Control-E>", self.on_export_shortcut)
         self.bind_all("<Control-o>", self.on_import_shortcut)
         self.bind_all("<Control-O>", self.on_import_shortcut)
+        self.bind_all("<Control-c>", self.on_copy_shortcut)
+        self.bind_all("<Control-C>", self.on_copy_shortcut)
+        self.bind_all("<Control-v>", self.on_paste_shortcut)
+        self.bind_all("<Control-V>", self.on_paste_shortcut)
         self.bind_class("TButton", "<space>", self.on_space_shortcut)
         self.bind_class("TCheckbutton", "<space>", self.on_space_shortcut)
         self.bind_class("TRadiobutton", "<space>", self.on_space_shortcut)
@@ -650,6 +746,18 @@ class YunYunEditorApp(tk.Tk):
         self.import_zip()
         return "break"
 
+    def on_copy_shortcut(self, _event: tk.Event):
+        if self.focus_is_text_input():
+            return None
+        self.copy_selection_to_clipboard()
+        return "break"
+
+    def on_paste_shortcut(self, _event: tk.Event):
+        if self.focus_is_text_input():
+            return None
+        self.paste_note_clipboard()
+        return "break"
+
     def on_tool_shortcut(self, event: tk.Event, tool: str):
         if self.focus_is_text_input() or (event.state & 0x0004):
             return None
@@ -703,7 +811,17 @@ class YunYunEditorApp(tk.Tk):
     def after_history_restore(self, previous_audio: bytes) -> None:
         if self.state.chart.audio_bytes != previous_audio:
             self.load_audio_bytes(self.state.chart.audio_bytes)
+        self.sync_audio_to_playhead()
         self.refresh_all()
+
+    def sync_audio_to_playhead(self) -> None:
+        level = self.state.active_level()
+        if not level:
+            return
+        tempo_map = build_tempo_map(level.InitBpm, level.BpmChangeEvents)
+        self.audio.seek(tick_to_seconds(self.state.playhead_tick, tempo_map, level.ScoreOffset))
+        self.scheduler.reset()
+        self.last_tick_for_sfx = self.state.playhead_tick
 
     def toggle_snap(self) -> None:
         self.state.snap_enabled = not self.state.snap_enabled
@@ -755,6 +873,17 @@ class YunYunEditorApp(tk.Tk):
         ttk.Button(level_buttons, text="+ Level", command=self.add_level).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(level_buttons, text="Duplicate", command=self.duplicate_level).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(level_buttons, text="Remove", command=self.remove_level).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        ttk.Label(parent, text="Active Level", style="Panel.TLabel").pack(anchor="w", padx=8, pady=(8, 2))
+        row = ttk.Frame(parent, style="Panel.TFrame")
+        row.pack(fill=tk.X, padx=8, pady=2)
+        ttk.Label(row, text="Offset s", width=9, style="Panel.TLabel").pack(side=tk.LEFT)
+        var = tk.StringVar()
+        self.vars["level_score_offset"] = var
+        self.level_score_offset_entry = ttk.Entry(row, textvariable=var)
+        self.level_score_offset_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.level_score_offset_entry.bind("<FocusOut>", lambda _e, v=var: self.update_level_score_offset(v.get()))
+        self.level_score_offset_entry.bind("<Return>", lambda _e, v=var: self.update_level_score_offset(v.get()))
 
         ttk.Separator(parent).pack(fill=tk.X, pady=6)
         ttk.Label(parent, text="Drafts", style="Panel.TLabel").pack(anchor="w", padx=8)
@@ -1124,6 +1253,7 @@ class YunYunEditorApp(tk.Tk):
             return
         self.state.chart.active_level_path = self.state.chart.song.Levels[idx].Path
         self.state.selection.clear()
+        self.sync_audio_to_playhead()
         self.refresh_all()
 
     def update_song(self, field_name: str, value: str) -> None:
@@ -1132,6 +1262,31 @@ class YunYunEditorApp(tk.Tk):
         self.push_history("Edit song metadata")
         self.state.update_song_field(field_name, value)
         self.refresh_levels()
+
+    def update_level_score_offset(self, value: str) -> None:
+        level = self.state.active_level()
+        if not level:
+            self.refresh_level_metadata()
+            return
+        raw = value.strip()
+        try:
+            offset = float(raw)
+        except ValueError:
+            self.set_status("Score offset must be a number of seconds.", temporary=True)
+            self.refresh_level_metadata()
+            return
+        if not math.isfinite(offset):
+            self.set_status("Score offset must be finite.", temporary=True)
+            self.refresh_level_metadata()
+            return
+        if level.ScoreOffset == offset:
+            self.refresh_level_metadata()
+            return
+        self.push_history("Edit level metadata")
+        level.ScoreOffset = offset
+        self.sync_audio_to_playhead()
+        self.refresh_all()
+        self.set_status(f"Score offset {format_score_offset(offset)} s.", temporary=True)
 
     def set_tool(self, tool: str) -> None:
         self.state.tool = tool
@@ -1214,6 +1369,26 @@ class YunYunEditorApp(tk.Tk):
         self.push_history("Nudge selection")
         nudge_selection(level, self.state.selection, delta_tick, delta_lane)
         self.refresh_all()
+
+    def copy_selection_to_clipboard(self) -> None:
+        level = self.state.active_level()
+        if not level or not self.state.selection:
+            return
+        self.note_clipboard = copy_selected_notes(level, self.state.selection)
+        self.set_status(f"Copied {len(self.note_clipboard)} note{'s' if len(self.note_clipboard) != 1 else ''}.", temporary=True)
+
+    def paste_note_clipboard(self) -> None:
+        level = self.state.active_level()
+        if not level or not self.note_clipboard:
+            return
+        target_tick = self.state.snapped_tick(self.state.playhead_tick)
+        self.push_history("Paste notes")
+        pasted_ids = paste_notes_at_tick(level, self.note_clipboard, target_tick)
+        if not pasted_ids:
+            return
+        self.state.selection = set(pasted_ids)
+        self.refresh_all()
+        self.set_status(f"Pasted {len(pasted_ids)} note{'s' if len(pasted_ids) != 1 else ''} at tick {target_tick}.", temporary=True)
 
     def add_event(self, kind: str) -> None:
         if not self.state.active_level():
@@ -1326,6 +1501,7 @@ class YunYunEditorApp(tk.Tk):
 
     def refresh_all(self) -> None:
         self.refresh_song()
+        self.refresh_level_metadata()
         self.refresh_levels()
         self.refresh_drafts()
         self.refresh_events()
@@ -1338,6 +1514,22 @@ class YunYunEditorApp(tk.Tk):
             var = self.vars.get(f"song_{field_name}")
             if var and var.get() != getattr(song, field_name):
                 var.set(getattr(song, field_name))
+
+    def refresh_level_metadata(self) -> None:
+        var = self.vars.get("level_score_offset")
+        entry = getattr(self, "level_score_offset_entry", None)
+        if not var or entry is None:
+            return
+        level = self.state.active_level()
+        if not level:
+            if var.get():
+                var.set("")
+            entry.state(["disabled"])
+            return
+        text = format_score_offset(level.ScoreOffset)
+        if var.get() != text:
+            var.set(text)
+        entry.state(["!disabled"])
 
     def refresh_levels(self) -> None:
         current = self.state.chart.active_level_path
@@ -1447,6 +1639,13 @@ def format_bpm(bpm: float) -> str:
     if "." not in text:
         text += ".0"
     return text or "0"
+
+
+def format_score_offset(offset: float) -> str:
+    text = f"{float(offset):.6f}".rstrip("0").rstrip(".")
+    if "." not in text:
+        text += ".0"
+    return text or "0.0"
 
 
 def main() -> None:
