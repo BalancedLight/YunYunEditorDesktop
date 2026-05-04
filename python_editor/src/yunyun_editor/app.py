@@ -225,9 +225,9 @@ class ChartCanvas(tk.Canvas):
                 self.create_rectangle(0, y - 1, self.LEFT_GUTTER - 4, y + 1, fill=color, outline="")
                 self.create_text(4, y - 8, text=label, anchor="w", fill=DIM, font=("Consolas", 9))
 
-        marker(level.InitBpm.Tick, ACCENT, f"{level.InitBpm.Bpm:.1f} BPM")
+        marker(level.InitBpm.Tick, ACCENT, f"{format_bpm(level.InitBpm.Bpm)} BPM")
         for ev in level.BpmChangeEvents:
-            marker(ev.Tick, ACCENT, f"{ev.Bpm:.1f} BPM")
+            marker(ev.Tick, ACCENT, f"{format_bpm(ev.Bpm)} BPM")
         marker(level.InitTimeSignature.Tick, RUSH, f"{level.InitTimeSignature.Numerator}/{level.InitTimeSignature.Denominator}")
         for ev in level.TimeSignature:
             marker(ev.Tick, RUSH, f"{ev.Numerator}/{ev.Denominator}")
@@ -1243,7 +1243,7 @@ class YunYunEditorApp(tk.Tk):
             return
         self.vars["event_tick"].set(str(ev.Tick))
         if kind == "bpm":
-            self.vars["event_a"].set(str(ev.Bpm))
+            self.vars["event_a"].set(format_bpm(ev.Bpm))
             self.vars["event_b"].set("")
         elif kind == "ts":
             self.vars["event_a"].set(str(ev.Numerator))
@@ -1366,7 +1366,7 @@ class YunYunEditorApp(tk.Tk):
         if not level:
             return
         for ev in level.BpmChangeEvents:
-            self.event_trees["bpm"].insert("", tk.END, iid=ev.id, values=(ev.Tick, f"{ev.Bpm:.3f}"))
+            self.event_trees["bpm"].insert("", tk.END, iid=ev.id, values=(ev.Tick, format_bpm(ev.Bpm)))
         for ev in level.TimeSignature:
             self.event_trees["ts"].insert("", tk.END, iid=ev.id, values=(ev.Tick, ev.Numerator, ev.Denominator))
         for ev in level.PhaseChangeEvents:
@@ -1430,6 +1430,11 @@ def format_seconds(seconds: float) -> str:
     minutes = int(seconds // 60)
     rem = seconds - minutes * 60
     return f"{minutes:02d}:{rem:06.3f}"
+
+
+def format_bpm(bpm: float) -> str:
+    text = f"{float(bpm):.3f}".rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def main() -> None:
