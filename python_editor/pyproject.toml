@@ -15,9 +15,6 @@ dependencies = [
   "soundfile>=0.12.1",
 ]
 
-[project.optional-dependencies]
-test = ["pytest>=8"]
-
 [tool.setuptools.packages.find]
 where = ["src"]
 
