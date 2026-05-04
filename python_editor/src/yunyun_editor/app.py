@@ -1434,6 +1434,8 @@ def format_seconds(seconds: float) -> str:
 
 def format_bpm(bpm: float) -> str:
     text = f"{float(bpm):.3f}".rstrip("0").rstrip(".")
+    if "." not in text:
+        text += ".0"
     return text or "0"
 
 
