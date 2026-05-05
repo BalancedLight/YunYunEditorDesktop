@@ -4,14 +4,14 @@ import copy
 import logging
 import math
 from pathlib import Path
+import sys
 import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 import time
 
 from .audio import AudioEngine, HitSfxScheduler
-from .audio_convert import convert_audio_file_to_ogg, ensure_ogg_audio
-from .drafts import CURRENT_DRAFT_ID, DraftStore
+from .audio_convert import convert_audio_file_to_ogg, decode_audio_bytes, ensure_ogg_audio
 from .editor_state import (
     ChartState,
     EditorState,
@@ -37,7 +37,16 @@ from .editor_state import (
     selection_after_note_click,
     selected_notes,
 )
-from .io import ImportedMod, build_zip_bytes, load_example_folder, parse_zip, sanitize_folder_name
+from .io import (
+    ImportedMod,
+    build_zip_bytes,
+    export_game_folder,
+    load_denpa,
+    load_example_folder,
+    parse_zip,
+    sanitize_folder_name,
+    save_denpa,
+)
 from .history import HistoryManager
 from .model import (
     BpmEvent,
@@ -48,6 +57,7 @@ from .model import (
     PhaseEvent,
     RushNote,
     SingleNote,
+    SongJson,
     SongLevelRef,
     TimeSignatureEvent,
     audio_to_music_path,
@@ -69,14 +79,29 @@ from .renderer_math import (
 )
 from .timing import SNAP_DIVISIONS, build_tempo_map, seconds_to_tick, tick_to_seconds
 from .waveform import WaveformEnvelope, load_waveform_bytes
+from .settings import SettingsStore
+from .tempo_detect import TempoDetectionResult, detect_tempo
 
 
-PYTHON_EDITOR_DIR = Path(__file__).resolve().parents[2]
+
+def runtime_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    return Path(__file__).resolve().parents[2]
+
+
+PYTHON_EDITOR_DIR = runtime_root()
 NOTE_TICK_PATH = PYTHON_EDITOR_DIR / "assets" / "audio" / "NoteTick.ogg"
+APP_ICON_PATH = PYTHON_EDITOR_DIR / "assets" / "yunIcon.ico"
 AUDIO_FILETYPES = [
     ("Audio files", "*.ogg *.wav *.mp3 *.flac *.aiff *.aif *.m4a *.aac *.opus"),
     ("All files", "*.*"),
 ]
+DENPA_FILETYPES = [("YunYun project", "*.denpa"), ("All files", "*.*")]
+AUTOSAVE_INTERVAL_SECONDS = 5 * 60
+AUTOSAVE_PRIMARY_NAME = "autosave.denpa"
+AUTOSAVE_BACKUP_NAME = "autosave_1.denpa"
+AUTOSAVE_GLOB = "autosave*.denpa"
 
 BG = "#14151a"
 BG0 = "#101116"
@@ -90,6 +115,172 @@ EDGE = "#b97cff"
 MID = "#3fcf6f"
 RUSH = "#ffb454"
 PLAYHEAD = "#ff6b6b"
+
+SHORTCUT_ROWS = [
+    ("Space", "Play / pause"),
+    ("Home / End", "Seek start / end"),
+    ("1 / 2 / 3 / 4", "Single / Hold / Rush / Eraser"),
+    ("V", "Select"),
+    ("S", "Toggle snap / conduct lane 2"),
+    ("D / K / L", "Conduct lanes 3 / 4 / 5"),
+    ("[ / ]", "Snap division down / up"),
+    ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
+    ("Ctrl+S", "Save .denpa"),
+    ("Ctrl+O", "Open .denpa"),
+    ("Ctrl+E", "Export ZIP"),
+    ("Delete", "Remove selected notes"),
+    (", / .", "Nudge by snap"),
+    ("< / >", "Nudge by beat"),
+]
+
+
+def apply_window_icon(window: tk.Wm) -> None:
+    if not APP_ICON_PATH.exists():
+        return
+    try:
+        window.iconbitmap(default=str(APP_ICON_PATH))
+    except tk.TclError:
+        pass
+
+
+class NewProjectDialog(simpledialog.Dialog):
+    def body(self, master: tk.Widget) -> tk.Widget:
+        self.title("New .denpa Level")
+        self.vars = {
+            "level_id": tk.StringVar(value="NewLevel"),
+            "title": tk.StringVar(value="New Level"),
+            "artist": tk.StringVar(),
+            "lyricist": tk.StringVar(),
+            "composer": tk.StringVar(),
+            "arranger": tk.StringVar(),
+            "audio_path": tk.StringVar(),
+            "editor": tk.StringVar(value="Beatmap Name"),
+            "difficulty": tk.StringVar(value="1"),
+            "level_slot": tk.StringVar(value="1"),
+            "init_bpm": tk.StringVar(value="120.0"),
+            "ts_num": tk.StringVar(value="4"),
+            "ts_den": tk.StringVar(value="4"),
+            "offset": tk.StringVar(value="0.0"),
+        }
+        rows = [
+            ("Level ID", "level_id"),
+            ("Title", "title"),
+            ("Artist", "artist"),
+            ("Lyricist", "lyricist"),
+            ("Composer", "composer"),
+            ("Arranger", "arranger"),
+            ("Beatmap Name", "editor"),
+            ("Difficulty", "difficulty"),
+            ("Level slot", "level_slot"),
+            ("Init BPM", "init_bpm"),
+            ("Time sig num", "ts_num"),
+            ("Time sig den", "ts_den"),
+            ("Offset s", "offset"),
+        ]
+        first: tk.Widget | None = None
+        for row_idx, (label, key) in enumerate(rows):
+            ttk.Label(master, text=label).grid(row=row_idx, column=0, sticky="w", padx=6, pady=3)
+            entry = ttk.Entry(master, textvariable=self.vars[key], width=36)
+            entry.grid(row=row_idx, column=1, sticky="ew", padx=6, pady=3)
+            first = first or entry
+        audio_row = len(rows)
+        ttk.Label(master, text="Audio").grid(row=audio_row, column=0, sticky="w", padx=6, pady=3)
+        ttk.Entry(master, textvariable=self.vars["audio_path"], width=36).grid(row=audio_row, column=1, sticky="ew", padx=6, pady=3)
+        ttk.Button(master, text="Browse", command=self.browse_audio).grid(row=audio_row, column=2, sticky="ew", padx=6, pady=3)
+        master.columnconfigure(1, weight=1)
+        return first
+
+    def browse_audio(self) -> None:
+        path = filedialog.askopenfilename(parent=self, filetypes=AUDIO_FILETYPES)
+        if path:
+            self.vars["audio_path"].set(path)
+
+    def validate(self) -> bool:
+        try:
+            level_id = self.vars["level_id"].get().strip()
+            if not level_id:
+                raise ValueError("Level ID is required.")
+            difficulty = int(float(self.vars["difficulty"].get()))
+            level_slot = int(float(self.vars["level_slot"].get()))
+            init_bpm = float(self.vars["init_bpm"].get())
+            ts_num = int(float(self.vars["ts_num"].get()))
+            ts_den = int(float(self.vars["ts_den"].get()))
+            offset = float(self.vars["offset"].get())
+            if difficulty < 1 or level_slot < 1:
+                raise ValueError("Difficulty and level slot must be greater than zero.")
+            if init_bpm <= 0 or not math.isfinite(init_bpm):
+                raise ValueError("Init BPM must be greater than zero.")
+            if ts_num < 1 or ts_den < 1:
+                raise ValueError("Time signature values must be greater than zero.")
+            if not math.isfinite(offset):
+                raise ValueError("Offset must be finite.")
+        except ValueError as exc:
+            messagebox.showerror("Invalid level info", str(exc), parent=self)
+            return False
+        return True
+
+    def apply(self) -> None:
+        self.result = {
+            key: var.get().strip()
+            for key, var in self.vars.items()
+        }
+
+
+class LevelInfoDialog(simpledialog.Dialog):
+    def body(self, master: tk.Widget) -> tk.Widget:
+        self.title("Add Level")
+        self.vars = {
+            "editor": tk.StringVar(value="Beatmap Name"),
+            "difficulty": tk.StringVar(value="1"),
+            "level_slot": tk.StringVar(value="1"),
+        }
+        first: tk.Widget | None = None
+        for row_idx, (label, key) in enumerate([("Beatmap Name", "editor"), ("Difficulty", "difficulty"), ("Level slot", "level_slot")]):
+            ttk.Label(master, text=label).grid(row=row_idx, column=0, sticky="w", padx=6, pady=3)
+            entry = ttk.Entry(master, textvariable=self.vars[key], width=28)
+            entry.grid(row=row_idx, column=1, sticky="ew", padx=6, pady=3)
+            first = first or entry
+        master.columnconfigure(1, weight=1)
+        return first
+
+    def validate(self) -> bool:
+        try:
+            difficulty = int(float(self.vars["difficulty"].get()))
+            level_slot = int(float(self.vars["level_slot"].get()))
+            if difficulty < 1 or level_slot < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Invalid level", "Difficulty and level slot must be whole numbers greater than zero.", parent=self)
+            return False
+        return True
+
+    def apply(self) -> None:
+        self.result = {
+            "editor": self.vars["editor"].get().strip() or "Editor",
+            "difficulty": int(float(self.vars["difficulty"].get())),
+            "level_slot": int(float(self.vars["level_slot"].get())),
+        }
+
+
+class TempoResultDialog(simpledialog.Dialog):
+    def __init__(self, parent: tk.Widget, results: list[TempoDetectionResult]) -> None:
+        self.results = results
+        self.selected_index = 0
+        super().__init__(parent, "BPM / Offset Detection")
+
+    def body(self, master: tk.Widget) -> tk.Widget:
+        ttk.Label(master, text="Choose a detected timing candidate:").pack(anchor="w", padx=8, pady=(8, 4))
+        self.listbox = tk.Listbox(master, bg=BG2, fg=FG, width=52, height=max(3, len(self.results)), selectbackground="#254766", borderwidth=0)
+        self.listbox.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        for result in self.results:
+            self.listbox.insert(tk.END, f"{format_bpm(result.bpm)} BPM, offset {format_score_offset(result.offset)} s, confidence {result.fitness:.3f}")
+        self.listbox.selection_set(0)
+        return self.listbox
+
+    def apply(self) -> None:
+        selection = self.listbox.curselection()
+        self.selected_index = int(selection[0]) if selection else 0
+        self.result = self.results[self.selected_index]
 
 
 class ChartCanvas(tk.Canvas):
@@ -577,24 +768,26 @@ class ChartCanvas(tk.Canvas):
 class YunYunEditorApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.log_path = DraftStore().root / "editor.log"
+        self.settings_store = SettingsStore()
+        self.settings = self.settings_store.load()
+        self.log_path = self.settings_store.root / "editor.log"
         logging.basicConfig(
             filename=self.log_path,
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(message)s",
         )
         self.title("YunYunEditor Desktop")
+        apply_window_icon(self)
         self.geometry("1280x820")
         self.configure(bg=BG0)
         self.state_obj = EditorState()
         self.history = HistoryManager()
         self.audio = AudioEngine()
         self.scheduler = HitSfxScheduler()
-        self.drafts = DraftStore()
         self.waveform: WaveformEnvelope | None = None
         self.last_tick_for_sfx = 0
-        self.current_draft_id: str | None = None
-        self.current_draft_name = ""
+        self.current_project_path: Path | None = None
+        self.last_autosave_at = time.monotonic()
         self.status_after_id: str | None = None
         self.conduct_keys_down: set[str] = set()
         self.note_clipboard: list[tuple[str, SingleNote]] = []
@@ -602,7 +795,7 @@ class YunYunEditorApp(tk.Tk):
         self._build_style()
         self._build_ui()
         self._load_sfx()
-        self.after(0, self.resume_last_draft_on_launch)
+        self.after(0, self.on_startup)
         self.after(16, self.tick)
 
     @property
@@ -631,15 +824,27 @@ class YunYunEditorApp(tk.Tk):
         style.configure("TRadiobutton", background=BG, foreground=FG)
         style.configure("Treeview", background=BG2, fieldbackground=BG2, foreground=FG)
         style.map("Treeview", background=[("selected", "#254766")])
+        style.configure("TCombobox", background=BG2, foreground=FG, fieldbackground=BG2, selectbackground=BG2, selectforeground=FG, arrowcolor=FG)
+        style.map("TCombobox",
+            background=[("readonly", BG2), ("disabled", BG0)],
+            fieldbackground=[("readonly", BG2), ("disabled", BG0)],
+            foreground=[("readonly", FG), ("disabled", FG)],
+            selectbackground=[("readonly", BG2)],
+            selectforeground=[("readonly", FG)],
+        )
 
     def _build_ui(self) -> None:
+        self._build_menu()
         toolbar = ttk.Frame(self)
         toolbar.pack(side=tk.TOP, fill=tk.X)
         for label, command in [
             ("New", self.new_project),
-            ("Import ZIP", self.import_zip),
+            ("Open", self.open_project),
+            ("Save", self.save_project),
+            ("Save As", self.save_project_as),
             ("Import Audio", self.import_audio),
-            ("Export ZIP", self.export_zip),
+            ("Export to Game", self.export_to_game),
+            ("Detect BPM/Offset", self.detect_bpm_offset),
         ]:
             ttk.Button(toolbar, text=label, command=command, takefocus=False).pack(side=tk.LEFT, padx=3, pady=5)
 
@@ -665,6 +870,8 @@ class YunYunEditorApp(tk.Tk):
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 3))
         self.disable_button_focus(self)
         self.bind_all("<space>", self.on_space_shortcut)
+        self.bind_all("<Control-n>", self.on_new_shortcut)
+        self.bind_all("<Control-N>", self.on_new_shortcut)
         self.bind_all("<Control-s>", self.on_save_shortcut)
         self.bind_all("<Control-S>", self.on_save_shortcut)
         self.bind_all("<Control-z>", self.on_undo_shortcut)
@@ -701,6 +908,37 @@ class YunYunEditorApp(tk.Tk):
         for key, tool in [("1", "single"), ("2", "hold"), ("3", "rush"), ("4", "eraser"), ("v", "select")]:
             self.bind(key, lambda e, t=tool: self.on_tool_shortcut(e, t))
 
+    def _build_menu(self) -> None:
+        menubar = tk.Menu(self)
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="New...", command=self.new_project, accelerator="Ctrl+N")
+        file_menu.add_command(label="Open .denpa...", command=self.open_project, accelerator="Ctrl+O")
+        file_menu.add_command(label="Save", command=self.save_project, accelerator="Ctrl+S")
+        file_menu.add_command(label="Save As...", command=self.save_project_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="Import ZIP...", command=self.import_zip)
+        file_menu.add_command(label="Import Audio...", command=self.import_audio)
+        file_menu.add_separator()
+        file_menu.add_command(label="Export ZIP...", command=self.export_zip, accelerator="Ctrl+E")
+        file_menu.add_command(label="Export to Game", command=self.export_to_game)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.destroy)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        tools_menu = tk.Menu(menubar, tearoff=False)
+        tools_menu.add_command(label="Detect BPM/Offset", command=self.detect_bpm_offset)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+
+        settings_menu = tk.Menu(menubar, tearoff=False)
+        settings_menu.add_command(label="YunYun Install Folder...", command=self.choose_yunyun_install)
+        settings_menu.add_command(label="Playback Speed...", command=self.open_speed_settings)
+        menubar.add_cascade(label="Settings", menu=settings_menu)
+
+        help_menu = tk.Menu(menubar, tearoff=False)
+        help_menu.add_command(label="Shortcuts", command=self.show_shortcuts)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        self.configure(menu=menubar)
+
     def disable_button_focus(self, widget: tk.Widget) -> None:
         for child in widget.winfo_children():
             try:
@@ -722,8 +960,14 @@ class YunYunEditorApp(tk.Tk):
         self.toggle_play()
         return "break"
 
+    def on_new_shortcut(self, _event: tk.Event):
+        if self.focus_is_text_input():
+            return None
+        self.new_project()
+        return "break"
+
     def on_save_shortcut(self, _event: tk.Event):
-        self.quick_save_draft()
+        self.save_project()
         return "break"
 
     def on_undo_shortcut(self, _event: tk.Event):
@@ -743,7 +987,7 @@ class YunYunEditorApp(tk.Tk):
     def on_import_shortcut(self, _event: tk.Event):
         if self.focus_is_text_input():
             return None
-        self.import_zip()
+        self.open_project()
         return "break"
 
     def on_copy_shortcut(self, _event: tk.Event):
@@ -846,41 +1090,8 @@ class YunYunEditorApp(tk.Tk):
         if temporary:
             self.status_after_id = self.after(6000, lambda: self.status_label.configure(text="Ready"))
 
-    def draft_display_name(self) -> str:
+    def project_display_name(self) -> str:
         return self.state.chart.song.Title or self.state.chart.song.ID or "Untitled"
-
-    @staticmethod
-    def _format_project_value(value: str) -> str:
-        value = value.strip()
-        return value or "(blank)"
-
-    def _save_overwrite_warning(self, draft_id: str) -> str | None:
-        meta = self.drafts.get_meta(draft_id)
-        if not meta:
-            return None
-        saved_identity = self.drafts.get_saved_song_identity(draft_id)
-        saved_song_id, saved_song_title = saved_identity or (meta.song_id, meta.song_title)
-        mismatches: list[str] = []
-        current_song_id = self.state.chart.song.ID.strip()
-        if current_song_id != saved_song_id.strip():
-            mismatches.append(
-                f'ID: "{self._format_project_value(saved_song_id)}" -> "{self._format_project_value(current_song_id)}"'
-            )
-        current_song_title = self.state.chart.song.Title.strip()
-        if current_song_title != saved_song_title.strip():
-            mismatches.append(
-                f'Name: "{self._format_project_value(saved_song_title)}" -> "{self._format_project_value(current_song_title)}"'
-            )
-        if not mismatches:
-            return None
-        target = 'the "working" entry' if draft_id == CURRENT_DRAFT_ID else f'"{meta.name or "current draft"}"'
-        return (
-            f"Saving now will overwrite {target} instead of creating a new save.\n\n"
-            "The chart's project values changed since this save was loaded:\n"
-            f"{'\n'.join(mismatches)}\n\n"
-            'Use "Save As" if you want a separate draft.\n\n'
-            "Save anyway?"
-        )
 
     def _build_left(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="Song", style="Panel.TLabel").pack(anchor="w", padx=8, pady=(8, 2))
@@ -888,7 +1099,8 @@ class YunYunEditorApp(tk.Tk):
         for field_name in fields:
             row = ttk.Frame(parent, style="Panel.TFrame")
             row.pack(fill=tk.X, padx=8, pady=2)
-            ttk.Label(row, text=field_name, width=9, style="Panel.TLabel").pack(side=tk.LEFT)
+            label = "Level ID" if field_name == "ID" else field_name
+            ttk.Label(row, text=label, width=9, style="Panel.TLabel").pack(side=tk.LEFT)
             var = tk.StringVar()
             self.vars[f"song_{field_name}"] = var
             entry = ttk.Entry(row, textvariable=var)
@@ -928,16 +1140,31 @@ class YunYunEditorApp(tk.Tk):
         self.level_init_bpm_entry.bind("<FocusOut>", lambda _e, v=var: self.update_level_init_bpm(v.get()))
         self.level_init_bpm_entry.bind("<Return>", lambda _e, v=var: self.update_level_init_bpm(v.get()))
 
-        ttk.Separator(parent).pack(fill=tk.X, pady=6)
-        ttk.Label(parent, text="Drafts", style="Panel.TLabel").pack(anchor="w", padx=8)
-        self.draft_list = tk.Listbox(parent, bg=BG2, fg=FG, height=8, selectbackground="#254766", borderwidth=0)
-        self.draft_list.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
-        draft_buttons = ttk.Frame(parent, style="Panel.TFrame")
-        draft_buttons.pack(fill=tk.X, padx=8, pady=(0, 8))
-        ttk.Button(draft_buttons, text="Save", command=self.quick_save_draft, takefocus=False).pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(draft_buttons, text="Save As", command=self.save_draft_as, takefocus=False).pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(draft_buttons, text="Load", command=self.load_selected_draft, takefocus=False).pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(draft_buttons, text="Delete", command=self.delete_selected_draft, takefocus=False).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        row = ttk.Frame(parent, style="Panel.TFrame")
+        row.pack(fill=tk.X, padx=8, pady=2)
+        ttk.Label(row, text="Init TS", width=9, style="Panel.TLabel").pack(side=tk.LEFT)
+        self.vars["level_init_ts_num"] = tk.StringVar()
+        self.level_init_ts_num_entry = ttk.Entry(row, textvariable=self.vars["level_init_ts_num"], width=6)
+        self.level_init_ts_num_entry.pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Label(row, text="/", style="Panel.TLabel").pack(side=tk.LEFT)
+        self.vars["level_init_ts_den"] = tk.StringVar()
+        self.level_init_ts_den_entry = ttk.Entry(row, textvariable=self.vars["level_init_ts_den"], width=6)
+        self.level_init_ts_den_entry.pack(side=tk.LEFT, padx=(2, 0))
+        for entry in (self.level_init_ts_num_entry, self.level_init_ts_den_entry):
+            entry.bind(
+                "<FocusOut>",
+                lambda _e: self.update_level_init_time_signature(
+                    self.vars["level_init_ts_num"].get(),
+                    self.vars["level_init_ts_den"].get(),
+                ),
+            )
+            entry.bind(
+                "<Return>",
+                lambda _e: self.update_level_init_time_signature(
+                    self.vars["level_init_ts_num"].get(),
+                    self.vars["level_init_ts_den"].get(),
+                ),
+            )
 
     def _build_transport(self, parent: ttk.Frame) -> None:
         transport = ttk.Frame(parent)
@@ -958,9 +1185,8 @@ class YunYunEditorApp(tk.Tk):
         self.zoom_label.pack(side=tk.LEFT)
         ttk.Button(transport, text="+", command=lambda: self.set_zoom(self.state.pixels_per_second * 1.25)).pack(side=tk.LEFT, padx=1)
 
-        ttk.Label(transport, text="Speed").pack(side=tk.LEFT, padx=(14, 2))
         self.vars["speed"] = tk.DoubleVar(value=1.0)
-        ttk.Scale(transport, from_=0.25, to=2.0, variable=self.vars["speed"], command=self.update_speed).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        ttk.Button(transport, text="Speed", command=self.open_speed_settings, takefocus=False).pack(side=tk.LEFT, padx=(14, 2))
         self.speed_label = ttk.Label(transport, text="1.00x", width=6)
         self.speed_label.pack(side=tk.LEFT)
         self.vars["sfx"] = tk.BooleanVar(value=True)
@@ -975,8 +1201,6 @@ class YunYunEditorApp(tk.Tk):
         tool_frame.pack(fill=tk.X, padx=8)
         for label, value in [("Select", "select"), ("Single", "single"), ("Hold", "hold"), ("Rush", "rush"), ("Eraser", "eraser")]:
             ttk.Radiobutton(tool_frame, text=label, value=value, variable=self.vars["tool"], command=lambda v=value: self.set_tool(v)).pack(anchor="w")
-
-        self._build_shortcuts(parent)
 
         ttk.Separator(parent).pack(fill=tk.X, pady=6)
         ttk.Label(parent, text="Selection", style="Panel.TLabel").pack(anchor="w", padx=8)
@@ -1017,31 +1241,6 @@ class YunYunEditorApp(tk.Tk):
         ttk.Button(edit, text="Apply", command=self.apply_event_edit).pack(side=tk.LEFT, padx=2)
         ttk.Button(edit, text="Delete", command=self.delete_event).pack(side=tk.LEFT, padx=2)
 
-    def _build_shortcuts(self, parent: ttk.Frame) -> None:
-        ttk.Separator(parent).pack(fill=tk.X, pady=6)
-        ttk.Label(parent, text="Shortcuts", style="Panel.TLabel").pack(anchor="w", padx=8)
-        frame = ttk.Frame(parent, style="Panel.TFrame")
-        frame.pack(fill=tk.X, padx=8, pady=(0, 4))
-        rows = [
-            ("Space", "Play / pause"),
-            ("Home / End", "Seek start / end"),
-            ("1 / 2 / 3 / 4", "Single / Hold / Rush / Eraser"),
-            ("V", "Select"),
-            ("S", "Toggle snap / conduct lane 2"),
-            ("D / K / L", "Conduct lanes 3 / 4 / 5"),
-            ("[ / ]", "Snap division down / up"),
-            ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
-            ("Ctrl+S", "Save draft"),
-            ("Ctrl+E", "Export ZIP"),
-            ("Ctrl+O", "Import ZIP"),
-            ("Delete", "Remove selected notes"),
-            (", / .", "Nudge by snap"),
-            ("< / >", "Nudge by beat"),
-        ]
-        for idx, (key, action) in enumerate(rows):
-            ttk.Label(frame, text=key, width=20, style="Panel.TLabel").grid(row=idx, column=0, sticky="w", padx=(0, 6), pady=1)
-            ttk.Label(frame, text=action, style="Panel.TLabel").grid(row=idx, column=1, sticky="w", pady=1)
-
     def _load_sfx(self) -> None:
         if not NOTE_TICK_PATH.exists():
             return
@@ -1050,7 +1249,65 @@ class YunYunEditorApp(tk.Tk):
         except RuntimeError:
             pass
 
-    def load_imported_mod(self, mod: ImportedMod, draft_id: str | None = None, draft_name: str = "") -> None:
+    def on_startup(self) -> None:
+        self.refresh_all()
+        self.refresh_title()
+        self.set_status("Ready. New or open a .denpa project.", temporary=False)
+        if not self.settings.yunyun_install_path and not self.settings.prompted_for_yunyun_install:
+            self.settings.prompted_for_yunyun_install = True
+            self.settings_store.save(self.settings)
+            if messagebox.askyesno(
+                "YunYun install folder",
+                'Choose your YunYun install folder now? This enables "Export to Game".',
+            ):
+                self.choose_yunyun_install()
+
+    def refresh_title(self) -> None:
+        name = self.current_project_path.name if self.current_project_path else self.project_display_name()
+        self.title(f"YunYunEditor Desktop - {name}")
+
+    def show_shortcuts(self) -> None:
+        lines = [f"{key}: {action}" for key, action in SHORTCUT_ROWS]
+        messagebox.showinfo("Shortcuts", "\n".join(lines))
+
+    def choose_yunyun_install(self) -> bool:
+        initial = self.settings.yunyun_install_path if self.settings.yunyun_install_path else None
+        options = {"title": "Select YunYun install folder"}
+        if initial:
+            options["initialdir"] = initial
+        path = filedialog.askdirectory(**options)
+        if not path:
+            self.set_status("YunYun install folder unchanged.", temporary=True)
+            return False
+        self.settings.yunyun_install_path = path
+        self.settings.prompted_for_yunyun_install = True
+        self.settings_store.save(self.settings)
+        self.set_status(f'YunYun install folder set to "{path}".', temporary=True)
+        return True
+
+    def open_speed_settings(self) -> None:
+        window = tk.Toplevel(self)
+        window.title("Playback Speed")
+        window.configure(bg=BG0)
+        window.transient(self)
+        window.resizable(False, False)
+        var = tk.DoubleVar(value=self.state.editor_speed)
+        label = ttk.Label(window, text=f"{self.state.editor_speed:.2f}x")
+        label.pack(padx=16, pady=(14, 6))
+
+        def apply_speed(_value=None) -> None:
+            self.vars["speed"].set(var.get())
+            self.update_speed()
+            label.configure(text=f"{self.state.editor_speed:.2f}x")
+
+        ttk.Scale(window, from_=0.25, to=2.0, variable=var, command=apply_speed, length=260).pack(padx=16, pady=6)
+        presets = ttk.Frame(window)
+        presets.pack(fill=tk.X, padx=16, pady=6)
+        for value in (0.5, 0.75, 1.0, 1.25, 1.5):
+            ttk.Button(presets, text=f"{value:g}x", command=lambda v=value: (var.set(v), apply_speed())).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(window, text="Close", command=window.destroy).pack(padx=16, pady=(6, 14))
+
+    def load_imported_mod(self, mod: ImportedMod, project_path: str | Path | None = None) -> None:
         if mod.audio_bytes:
             try:
                 audio_filename, audio_bytes = ensure_ogg_audio(mod.audio_filename or mod.song.Audio, mod.audio_bytes)
@@ -1067,7 +1324,7 @@ class YunYunEditorApp(tk.Tk):
         chart = ChartState(
             song=mod.song,
             levels=mod.levels,
-            active_level_path=mod.song.Levels[0].Path if mod.song.Levels else None,
+            active_level_path=mod.active_level_path if mod.active_level_path in mod.levels else (mod.song.Levels[0].Path if mod.song.Levels else None),
             audio_filename=mod.audio_filename,
             audio_bytes=mod.audio_bytes,
             mod_folder_name=mod.mod_folder_name,
@@ -1076,28 +1333,14 @@ class YunYunEditorApp(tk.Tk):
         self.history.clear()
         self.load_audio_bytes(mod.audio_bytes)
         self.scheduler.reset()
-        self.current_draft_id = draft_id
-        self.current_draft_name = draft_name
+        self.current_project_path = Path(project_path) if project_path else None
+        self.mark_autosave_checkpoint()
         self.refresh_all()
+        self.refresh_title()
         if mod.warnings:
             messagebox.showwarning("Import warnings", "\n".join(mod.warnings))
-        label = draft_name or mod.song.Title or mod.song.ID or mod.mod_folder_name
+        label = self.current_project_path.name if self.current_project_path else (mod.song.Title or mod.song.ID or mod.mod_folder_name)
         self.set_status(f'Loaded "{label}" at song start.', temporary=True)
-
-    def resume_last_draft_on_launch(self) -> None:
-        meta = self.drafts.latest()
-        if not meta:
-            self.refresh_drafts()
-            self.set_status("Ready. Import a ZIP or load a draft.", temporary=False)
-            return
-        try:
-            song, levels, audio_filename, audio_bytes = self.drafts.load(meta.id)
-            self.load_imported_mod(ImportedMod(song, levels, audio_filename, audio_bytes, meta.name, []), meta.id, meta.name)
-            self.seek_tick(0)
-            self.set_status(f'Resumed "{meta.name}" from the start. Ctrl+S saves it.', temporary=False)
-        except Exception as exc:
-            self.refresh_drafts()
-            self.set_status(f"Could not resume last draft: {exc}", temporary=False)
 
     def load_audio_bytes(self, audio_bytes: bytes) -> None:
         self.waveform = None
@@ -1118,14 +1361,136 @@ class YunYunEditorApp(tk.Tk):
             self.waveform = None
 
     def new_project(self) -> None:
-        if messagebox.askyesno("New project", "Clear the current project?"):
-            self.push_history("New project")
-            self.audio.stop()
-            self.waveform = None
-            self.current_draft_id = None
-            self.current_draft_name = ""
-            self.state.new_project()
-            self.refresh_all()
+        if self.state.chart.song.Levels and not messagebox.askyesno("New project", "Clear the current project?"):
+            return
+        dialog = NewProjectDialog(self)
+        data = dialog.result
+        if not data:
+            self.set_status("New project canceled.", temporary=True)
+            return
+        initial = f"{sanitize_folder_name(data['level_id'])}.denpa"
+        project_path = filedialog.asksaveasfilename(defaultextension=".denpa", filetypes=DENPA_FILETYPES, initialfile=initial)
+        if not project_path:
+            self.set_status("New project canceled.", temporary=True)
+            return
+        audio_filename = ""
+        audio_bytes = b""
+        audio_path = data.get("audio_path", "")
+        if audio_path:
+            try:
+                self.set_status(f'Converting "{Path(audio_path).name}" to OGG...', temporary=False)
+                self.update_idletasks()
+                audio_filename, audio_bytes = convert_audio_file_to_ogg(audio_path)
+            except Exception as exc:
+                logging.exception("Audio import failed for %s", audio_path)
+                messagebox.showerror("Audio import failed", str(exc))
+                self.set_status(f"Audio import failed: {exc}", temporary=False)
+                return
+        song = SongJson(
+            ID=data["level_id"],
+            Audio=audio_filename,
+            Title=data["title"],
+            Artist=data["artist"],
+            Lyricist=data["lyricist"],
+            Composer=data["composer"],
+            Arranger=data["arranger"],
+        )
+        slot = int(float(data["level_slot"]))
+        difficulty = int(float(data["difficulty"]))
+        level_path = f"level{slot}.json"
+        song.Levels.append(SongLevelRef(data["editor"] or "Editor", difficulty, level_path))
+        level = empty_level(song.ID, slot, audio_to_music_path(audio_filename))
+        level.ScoreOffset = float(data["offset"])
+        level.InitBpm = BpmEvent(0, float(data["init_bpm"]))
+        level.InitTimeSignature = TimeSignatureEvent(0, int(float(data["ts_num"])), int(float(data["ts_den"])))
+        chart = ChartState(song=song, levels={level_path: level}, active_level_path=level_path, audio_filename=audio_filename, audio_bytes=audio_bytes, mod_folder_name=sanitize_folder_name(song.ID))
+        self.audio.stop()
+        self.waveform = None
+        self.current_project_path = Path(project_path)
+        self.state.replace_chart(chart)
+        self.history.clear()
+        self.load_audio_bytes(audio_bytes)
+        self.save_project_to(self.current_project_path, show_message=False)
+        self.refresh_all()
+        self.refresh_title()
+        self.set_status(f'Created "{Path(project_path).name}".', temporary=True)
+
+    def open_project(self) -> None:
+        path = filedialog.askopenfilename(filetypes=DENPA_FILETYPES)
+        if not path:
+            return
+        try:
+            self.load_imported_mod(load_denpa(path), project_path=path)
+            self.seek_tick(0)
+        except Exception as exc:
+            messagebox.showerror("Open failed", str(exc))
+            self.set_status(f"Open failed: {exc}", temporary=False)
+
+    def save_project(self) -> None:
+        if self.current_project_path:
+            self.save_project_to(self.current_project_path)
+            return
+        self.save_project_as()
+
+    def save_project_as(self) -> None:
+        initial = f"{sanitize_folder_name(self.state.chart.song.ID or self.state.chart.mod_folder_name or 'Untitled')}.denpa"
+        path = filedialog.asksaveasfilename(defaultextension=".denpa", filetypes=DENPA_FILETYPES, initialfile=initial)
+        if not path:
+            self.set_status("Save canceled.", temporary=True)
+            return
+        self.save_project_to(Path(path))
+
+    def save_project_to(self, path: str | Path, show_message: bool = True) -> None:
+        try:
+            save_denpa(path, self.state.chart)
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
+            self.set_status(f"Save failed: {exc}", temporary=False)
+            return
+        self.current_project_path = Path(path)
+        self.mark_autosave_checkpoint()
+        if not self.state.chart.mod_folder_name or self.state.chart.mod_folder_name == "mod":
+            self.state.chart.mod_folder_name = self.current_project_path.stem
+        self.refresh_title()
+        if show_message:
+            self.set_status(f'Saved "{self.current_project_path.name}" at {time.strftime("%H:%M:%S")}.', temporary=True)
+
+    def mark_autosave_checkpoint(self) -> None:
+        self.last_autosave_at = time.monotonic()
+
+    def active_level_folder(self) -> Path | None:
+        if not self.current_project_path:
+            return None
+        level_path = Path(self.state.chart.active_level_path or "")
+        if str(level_path.parent) in ("", "."):
+            return self.current_project_path.parent
+        return self.current_project_path.parent / level_path.parent
+
+    def autosave_project_if_due(self) -> None:
+        if not self.current_project_path:
+            return
+        now = time.monotonic()
+        if now - self.last_autosave_at < AUTOSAVE_INTERVAL_SECONDS:
+            return
+        target_dir = self.active_level_folder()
+        if not target_dir:
+            self.last_autosave_at = now
+            return
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            primary = target_dir / AUTOSAVE_PRIMARY_NAME
+            backup = target_dir / AUTOSAVE_BACKUP_NAME
+            if primary.exists():
+                backup.unlink(missing_ok=True)
+                primary.replace(backup)
+            save_denpa(primary, self.state.chart)
+            autosaves = sorted(target_dir.glob(AUTOSAVE_GLOB), key=lambda item: item.stat().st_mtime, reverse=True)
+            for stale in autosaves[2:]:
+                stale.unlink(missing_ok=True)
+            self.last_autosave_at = now
+        except Exception:
+            logging.exception("Autosave failed")
+            self.last_autosave_at = now
 
     def import_zip(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("YunYun mod ZIP", "*.zip"), ("All files", "*.*")])
@@ -1134,8 +1499,7 @@ class YunYunEditorApp(tk.Tk):
         try:
             self.load_imported_mod(parse_zip(path))
             self.canvas.focus_set()
-            self.quick_save_draft(name=f"Imported - {self.draft_display_name()}", show_message=False, confirm_overwrite=False)
-            self.set_status(f'Imported "{Path(path).name}" and saved a resumable draft.', temporary=True)
+            self.set_status(f'Imported "{Path(path).name}". Use Save As to create a .denpa project.', temporary=True)
         except Exception as exc:
             messagebox.showerror("Import failed", str(exc))
             self.set_status(f"Import failed: {exc}", temporary=False)
@@ -1156,8 +1520,6 @@ class YunYunEditorApp(tk.Tk):
         self.push_history("Import audio")
         self.state.set_audio(audio_filename, data)
         self.load_audio_bytes(data)
-        self.current_draft_id = None
-        self.current_draft_name = ""
         self.refresh_all()
         self.set_status(f'Imported "{Path(path).name}" as "{audio_filename}". Press Ctrl+S to save.', temporary=True)
 
@@ -1189,79 +1551,71 @@ class YunYunEditorApp(tk.Tk):
         self.canvas.focus_set()
         self.set_status(f'Exported "{Path(path).name}". Space will still play/pause.', temporary=True)
 
-    def quick_save_draft(self, name: str | None = None, show_message: bool = True, confirm_overwrite: bool = True) -> None:
-        draft_id = self.current_draft_id
-        draft_name = name or self.current_draft_name or f"Working - {self.draft_display_name()}"
-        if not draft_id:
-            draft_id = CURRENT_DRAFT_ID
-        if confirm_overwrite:
-            warning = self._save_overwrite_warning(draft_id)
-            if warning and not messagebox.askyesno("Overwrite current save?", warning):
-                self.canvas.focus_set()
-                self.set_status("Save canceled.", temporary=True)
-                return
-        self.save_draft_to(draft_id, draft_name, show_message=show_message)
-
-    def save_draft_as(self) -> None:
-        name = simpledialog.askstring("Save draft as", "Draft name:", initialvalue=self.current_draft_name or self.draft_display_name())
-        if not name:
-            self.set_status("Save canceled.", temporary=True)
+    def export_to_game(self) -> None:
+        if not self.state.chart.song.Levels:
+            messagebox.showerror("Export to Game failed", "At least one level is required.")
             return
-        self.save_draft_to(new_id(), name, show_message=True)
-
-    def save_draft_to(self, draft_id: str, name: str, show_message: bool = True) -> None:
+        if not self.settings.yunyun_install_path and not self.choose_yunyun_install():
+            messagebox.showerror("Export to Game failed", "Choose a YunYun install folder in Settings first.")
+            return
         try:
-            meta = self.drafts.save(
-                draft_id,
-                name,
+            target = export_game_folder(
+                self.settings.yunyun_install_path,
                 self.state.chart.song,
                 self.state.chart.levels,
                 self.state.chart.audio_filename,
                 self.state.chart.audio_bytes,
+                sanitize_folder_name(self.state.chart.song.ID or self.state.chart.mod_folder_name),
             )
         except Exception as exc:
-            self.set_status(f"Save failed: {exc}", temporary=False)
-            messagebox.showerror("Save failed", str(exc))
+            messagebox.showerror("Export to Game failed", str(exc))
+            self.set_status(f"Export to Game failed: {exc}", temporary=False)
             return
-        self.current_draft_id = meta.id
-        self.current_draft_name = meta.name
-        self.refresh_drafts()
-        self.select_draft_in_list(meta.id)
-        if show_message:
-            self.set_status(f'Saved "{meta.name}" at {time.strftime("%H:%M:%S")}.', temporary=True)
+        self.set_status(f'Exported to game folder "{target}".', temporary=True)
 
-    def load_selected_draft(self) -> None:
-        selection = self.draft_list.curselection()
-        if not selection:
-            self.set_status("Select a draft to load.", temporary=True)
+    def detect_bpm_offset(self) -> None:
+        level = self.state.active_level()
+        if not level:
+            messagebox.showerror("Detection failed", "Load or create a level first.")
             return
-        meta = self.drafts.list()[selection[0]]
+        if not self.state.chart.audio_bytes:
+            messagebox.showerror("Detection failed", "Import audio before detecting BPM/offset.")
+            return
         try:
-            song, levels, audio_filename, audio_bytes = self.drafts.load(meta.id)
-            self.load_imported_mod(ImportedMod(song, levels, audio_filename, audio_bytes, meta.name, []), meta.id, meta.name)
-            self.seek_tick(0)
-            self.select_draft_in_list(meta.id)
+            self.set_status("Detecting BPM/offset...", temporary=False)
+            self.update_idletasks()
+            samples, sample_rate = decode_audio_bytes(
+                self.state.chart.audio_bytes,
+                self.state.chart.audio_filename or self.state.chart.song.Audio or "audio.ogg",
+            )
+            results = detect_tempo(samples, sample_rate)
         except Exception as exc:
-            self.set_status(f"Load failed: {exc}", temporary=False)
-            messagebox.showerror("Load failed", str(exc))
-
-    def delete_selected_draft(self) -> None:
-        selection = self.draft_list.curselection()
-        if not selection:
+            logging.exception("BPM/offset detection failed")
+            messagebox.showerror("Detection failed", str(exc))
+            self.set_status(f"Detection failed: {exc}", temporary=False)
             return
-        meta = self.drafts.list()[selection[0]]
-        if messagebox.askyesno("Delete draft", f'Delete "{meta.name}"?'):
-            self.drafts.delete(meta.id)
-            if self.current_draft_id == meta.id:
-                self.current_draft_id = None
-                self.current_draft_name = ""
-            self.refresh_drafts()
-            self.set_status(f'Deleted draft "{meta.name}".', temporary=True)
+        dialog = TempoResultDialog(self, results)
+        result = dialog.result
+        if not result:
+            self.set_status("Detection canceled.", temporary=True)
+            return
+        self.push_history("Detect BPM/offset")
+        level.InitBpm.Bpm = result.bpm
+        level.ScoreOffset = result.offset
+        self.sync_audio_to_playhead()
+        self.refresh_all()
+        self.set_status(
+            f"Applied {format_bpm(result.bpm)} BPM, offset {format_score_offset(result.offset)} s.",
+            temporary=True,
+        )
 
     def add_level(self) -> None:
-        editor = simpledialog.askstring("Add level", "Editor:", initialvalue="Editor") or "Editor"
-        difficulty = simpledialog.askinteger("Add level", "Difficulty:", minvalue=1, maxvalue=20, initialvalue=1) or 1
-        slot = simpledialog.askinteger("Add level", "Level slot:", minvalue=1, maxvalue=20, initialvalue=1) or 1
+        dialog = LevelInfoDialog(self)
+        if not dialog.result:
+            return
+        editor = dialog.result["editor"]
+        difficulty = dialog.result["difficulty"]
+        slot = dialog.result["level_slot"]
         self.push_history("Add level")
         self.state.add_level(editor, difficulty, slot)
         self.refresh_all()
@@ -1311,6 +1665,7 @@ class YunYunEditorApp(tk.Tk):
         self.push_history("Edit song metadata")
         self.state.update_song_field(field_name, value)
         self.refresh_levels()
+        self.refresh_title()
 
     def update_level_score_offset(self, value: str) -> None:
         level = self.state.active_level()
@@ -1365,6 +1720,31 @@ class YunYunEditorApp(tk.Tk):
         self.sync_audio_to_playhead()
         self.refresh_all()
         self.set_status(f"Init BPM {format_bpm(bpm)}.", temporary=True)
+
+    def update_level_init_time_signature(self, numerator_text: str, denominator_text: str) -> None:
+        level = self.state.active_level()
+        if not level:
+            self.refresh_level_metadata()
+            return
+        try:
+            numerator = int(float(numerator_text.strip()))
+            denominator = int(float(denominator_text.strip()))
+        except ValueError:
+            self.set_status("Init time signature must use whole numbers.", temporary=True)
+            self.refresh_level_metadata()
+            return
+        if numerator < 1 or denominator < 1:
+            self.set_status("Init time signature values must be greater than zero.", temporary=True)
+            self.refresh_level_metadata()
+            return
+        if level.InitTimeSignature.Numerator == numerator and level.InitTimeSignature.Denominator == denominator:
+            self.refresh_level_metadata()
+            return
+        self.push_history("Edit level metadata")
+        level.InitTimeSignature.Numerator = numerator
+        level.InitTimeSignature.Denominator = denominator
+        self.refresh_all()
+        self.set_status(f"Init time signature {numerator}/{denominator}.", temporary=True)
 
     def set_tool(self, tool: str) -> None:
         self.state.tool = tool
@@ -1581,7 +1961,6 @@ class YunYunEditorApp(tk.Tk):
         self.refresh_song()
         self.refresh_level_metadata()
         self.refresh_levels()
-        self.refresh_drafts()
         self.refresh_events()
         self.refresh_selection()
         self.canvas.redraw()
@@ -1598,7 +1977,16 @@ class YunYunEditorApp(tk.Tk):
         offset_entry = getattr(self, "level_score_offset_entry", None)
         bpm_var = self.vars.get("level_init_bpm")
         bpm_entry = getattr(self, "level_init_bpm_entry", None)
-        if not offset_var or offset_entry is None or not bpm_var or bpm_entry is None:
+        ts_num_var = self.vars.get("level_init_ts_num")
+        ts_den_var = self.vars.get("level_init_ts_den")
+        ts_num_entry = getattr(self, "level_init_ts_num_entry", None)
+        ts_den_entry = getattr(self, "level_init_ts_den_entry", None)
+        if (
+            not offset_var or offset_entry is None
+            or not bpm_var or bpm_entry is None
+            or not ts_num_var or not ts_den_var
+            or ts_num_entry is None or ts_den_entry is None
+        ):
             return
         level = self.state.active_level()
         if not level:
@@ -1606,8 +1994,14 @@ class YunYunEditorApp(tk.Tk):
                 offset_var.set("")
             if bpm_var.get():
                 bpm_var.set("")
+            if ts_num_var.get():
+                ts_num_var.set("")
+            if ts_den_var.get():
+                ts_den_var.set("")
             offset_entry.state(["disabled"])
             bpm_entry.state(["disabled"])
+            ts_num_entry.state(["disabled"])
+            ts_den_entry.state(["disabled"])
             return
         offset_text = format_score_offset(level.ScoreOffset)
         if offset_var.get() != offset_text:
@@ -1615,8 +2009,16 @@ class YunYunEditorApp(tk.Tk):
         bpm_text = format_bpm(level.InitBpm.Bpm)
         if bpm_var.get() != bpm_text:
             bpm_var.set(bpm_text)
+        ts_num_text = str(level.InitTimeSignature.Numerator)
+        ts_den_text = str(level.InitTimeSignature.Denominator)
+        if ts_num_var.get() != ts_num_text:
+            ts_num_var.set(ts_num_text)
+        if ts_den_var.get() != ts_den_text:
+            ts_den_var.set(ts_den_text)
         offset_entry.state(["!disabled"])
         bpm_entry.state(["!disabled"])
+        ts_num_entry.state(["!disabled"])
+        ts_den_entry.state(["!disabled"])
 
     def refresh_levels(self) -> None:
         current = self.state.chart.active_level_path
@@ -1630,21 +2032,6 @@ class YunYunEditorApp(tk.Tk):
                 active_idx = idx
         if active_idx is not None:
             self.level_list.selection_set(active_idx)
-
-    def refresh_drafts(self) -> None:
-        self.draft_list.delete(0, tk.END)
-        for item in self.drafts.list():
-            self.draft_list.insert(tk.END, f"{item.name} ({item.song_id or 'untitled'})")
-        if self.current_draft_id:
-            self.select_draft_in_list(self.current_draft_id)
-
-    def select_draft_in_list(self, draft_id: str) -> None:
-        for idx, item in enumerate(self.drafts.list()):
-            if item.id == draft_id:
-                self.draft_list.selection_clear(0, tk.END)
-                self.draft_list.selection_set(idx)
-                self.draft_list.see(idx)
-                break
 
     def refresh_events(self, select: tuple[str, str | None] | None = None) -> None:
         level = self.state.active_level()
@@ -1680,6 +2067,7 @@ class YunYunEditorApp(tk.Tk):
             self.selection_label.configure(text=f"{len(notes)} selected")
 
     def tick(self) -> None:
+        self.autosave_project_if_due()
         if self.audio.playing:
             level = self.state.active_level()
             if level:

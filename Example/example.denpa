@@ -1,0 +1,317 @@
+{
+	"schema": "yunyun.denpa",
+	"version": 1,
+	"song": {
+		"ID": "ExampleSong",
+		"Audio": "example.ogg",
+		"Title": "Example Title",
+		"Artist": "Example Artist",
+		"Lyricist": "Example Lyricist",
+		"Composer": "Unknown",
+		"Arranger": "Unknown",
+		"Levels": [
+			{
+				"Editor": "John Editor",
+				"Difficulty": 1,
+				"Path": "level1.json"
+			},
+			{
+				"Editor": "John Editor",
+				"Difficulty": 5,
+				"Path": "level3.json"
+			},
+			{
+				"Editor": "John Editor",
+				"Difficulty": 7,
+				"Path": "level4.json"
+			},
+			{
+				"Editor": "Joe Editor",
+				"Difficulty": 10,
+				"Path": "level5.json"
+			}
+		]
+	},
+	"levels": {
+		"level1.json": {
+			"Version": 1,
+			"MusicInfoName": "ExampleSong",
+			"Level": 1,
+			"MusicPath": "example",
+			"ScoreOffset": 0.032,
+			"InitBpm": {
+				"Tick": 0,
+				"Bpm": 120.0
+			},
+			"InitTimeSignature": {
+				"Tick": 0,
+				"Numerator": 4,
+				"Denominator": 4
+			},
+			"BpmChangeEvents": [
+				{
+					"Tick": 3000,
+					"Bpm": 150.0
+				}
+			],
+			"TimeSignature": [
+				{
+					"Tick": 5123,
+					"Numerator": 6,
+					"Denominator": 4
+				}
+			],
+			"PhaseChangeEvents": [
+				{
+					"Tick": 10000
+				}
+			],
+			"SingleNotes": [
+				{
+					"Tick": 1400,
+					"Lane": 3,
+					"Type": 0
+				},
+				{
+					"Tick": 3200,
+					"Lane": 5,
+					"Type": 0
+				}
+			],
+			"HoldNotes": [
+				{
+					"Tick": 2700,
+					"Lane": 4,
+					"Type": 0,
+					"Duration": 300
+				},
+				{
+					"Tick": 5523,
+					"Lane": 2,
+					"Type": 0,
+					"Duration": 600
+				}
+			],
+			"ShiftNotes": [],
+			"RushNotes": [
+				{
+					"Tick": 8888,
+					"Lane": 3,
+					"Type": 0,
+					"Duration": 1200
+				}
+			]
+		},
+		"level3.json": {
+			"Version": 1,
+			"MusicInfoName": "ExampleSong",
+			"Level": 3,
+			"MusicPath": "example",
+			"ScoreOffset": 0.032,
+			"InitBpm": {
+				"Tick": 0,
+				"Bpm": 120.0
+			},
+			"InitTimeSignature": {
+				"Tick": 0,
+				"Numerator": 4,
+				"Denominator": 4
+			},
+			"BpmChangeEvents": [
+				{
+					"Tick": 3000,
+					"Bpm": 150.0
+				}
+			],
+			"TimeSignature": [
+				{
+					"Tick": 5123,
+					"Numerator": 6,
+					"Denominator": 4
+				}
+			],
+			"PhaseChangeEvents": [
+				{
+					"Tick": 10000
+				}
+			],
+			"SingleNotes": [
+				{
+					"Tick": 1400,
+					"Lane": 3,
+					"Type": 0
+				},
+				{
+					"Tick": 3200,
+					"Lane": 5,
+					"Type": 0
+				}
+			],
+			"HoldNotes": [
+				{
+					"Tick": 2700,
+					"Lane": 4,
+					"Type": 0,
+					"Duration": 300
+				},
+				{
+					"Tick": 5523,
+					"Lane": 2,
+					"Type": 0,
+					"Duration": 600
+				}
+			],
+			"ShiftNotes": [],
+			"RushNotes": [
+				{
+					"Tick": 8888,
+					"Lane": 3,
+					"Type": 0,
+					"Duration": 1200
+				}
+			]
+		},
+		"level4.json": {
+			"Version": 1,
+			"MusicInfoName": "ExampleSong",
+			"Level": 4,
+			"MusicPath": "example",
+			"ScoreOffset": 0.032,
+			"InitBpm": {
+				"Tick": 0,
+				"Bpm": 120.0
+			},
+			"InitTimeSignature": {
+				"Tick": 0,
+				"Numerator": 4,
+				"Denominator": 4
+			},
+			"BpmChangeEvents": [
+				{
+					"Tick": 3000,
+					"Bpm": 150.0
+				}
+			],
+			"TimeSignature": [
+				{
+					"Tick": 5123,
+					"Numerator": 6,
+					"Denominator": 4
+				}
+			],
+			"PhaseChangeEvents": [
+				{
+					"Tick": 10000
+				}
+			],
+			"SingleNotes": [
+				{
+					"Tick": 1400,
+					"Lane": 3,
+					"Type": 0
+				},
+				{
+					"Tick": 3200,
+					"Lane": 5,
+					"Type": 0
+				}
+			],
+			"HoldNotes": [
+				{
+					"Tick": 2700,
+					"Lane": 4,
+					"Type": 0,
+					"Duration": 300
+				},
+				{
+					"Tick": 5523,
+					"Lane": 2,
+					"Type": 0,
+					"Duration": 600
+				}
+			],
+			"ShiftNotes": [],
+			"RushNotes": [
+				{
+					"Tick": 8888,
+					"Lane": 3,
+					"Type": 0,
+					"Duration": 1200
+				}
+			]
+		},
+		"level5.json": {
+			"Version": 1,
+			"MusicInfoName": "ExampleSong",
+			"Level": 5,
+			"MusicPath": "example",
+			"ScoreOffset": 0.032,
+			"InitBpm": {
+				"Tick": 0,
+				"Bpm": 120.0
+			},
+			"InitTimeSignature": {
+				"Tick": 0,
+				"Numerator": 4,
+				"Denominator": 4
+			},
+			"BpmChangeEvents": [
+				{
+					"Tick": 3000,
+					"Bpm": 150.0
+				}
+			],
+			"TimeSignature": [
+				{
+					"Tick": 5123,
+					"Numerator": 6,
+					"Denominator": 4
+				}
+			],
+			"PhaseChangeEvents": [
+				{
+					"Tick": 10000
+				}
+			],
+			"SingleNotes": [
+				{
+					"Tick": 1400,
+					"Lane": 3,
+					"Type": 0
+				},
+				{
+					"Tick": 3200,
+					"Lane": 5,
+					"Type": 0
+				}
+			],
+			"HoldNotes": [
+				{
+					"Tick": 2700,
+					"Lane": 4,
+					"Type": 0,
+					"Duration": 300
+				},
+				{
+					"Tick": 5523,
+					"Lane": 2,
+					"Type": 0,
+					"Duration": 600
+				}
+			],
+			"ShiftNotes": [],
+			"RushNotes": [
+				{
+					"Tick": 8888,
+					"Lane": 3,
+					"Type": 0,
+					"Duration": 1200
+				}
+			]
+		}
+	},
+	"active_level_path": "level1.json",
+	"audio_filename": "example.ogg",
+	"audio_path": "example.ogg",
+	"mod_folder_name": "Example"
+}

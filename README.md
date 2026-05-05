@@ -2,8 +2,6 @@
 
 Desktop chart editor for [YunYunLoader](https://github.com/EBro912/YunYunLoader/) mods.
 
-This repository now uses the Python/Tkinter editor as the main editor. The old web/Svelte editor has been removed.
-
 ## Quick Start
 
 On Windows, run:
@@ -30,13 +28,37 @@ python -m venv .venv
 .venv\Scripts\python -m yunyun_editor
 ```
 
+## Build EXE
+
+On Windows, run:
+
+```bat
+BuildYunYunEditorExe.bat
+```
+
+The build script will:
+
+1. Reuse or create `python_editor\.venv`.
+2. Install the editor and `pyinstaller` into that venv.
+3. Build a PyInstaller onedir package.
+
+The output executable is:
+
+```text
+dist\YunYunEditor\YunYunEditor.exe
+```
+
+Keep the full `dist\YunYunEditor` folder together when distributing it.
+
 ## Features
 
 - Import existing YunYunLoader mod ZIPs.
+- Save and load editable `.denpa` projects with embedded song/level JSON and copied audio.
 - Import common audio formats and normalize them to OGG/Vorbis for export.
+- Export directly to an unpacked YunYun install `Songs` folder.
+- Detect initial BPM and score offset from the current audio.
 - Edit notes, holds, rush notes, BPM, time signatures, and end level (phase) events.
-- Waveform background, bar/beat labels, snap controls, speed control, hit SFX, conduct mode, undo/redo, drafts, and ZIP export.
-- Drafts are stored in the local app-data folder and the most recent draft resumes on launch.
+- Waveform background, bar/beat labels, snap controls, speed control, hit SFX, conduct mode, undo/redo, and ZIP export.
 
 ## Shortcuts
 
@@ -50,19 +72,11 @@ python -m venv .venv
 | `D` / `K` / `L` | Conduct middle-left / middle-right / right lanes |
 | `[` / `]` | Halve / double snap division |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
-| `Ctrl+S` | Save draft |
+| `Ctrl+S` | Save `.denpa` |
 | `Ctrl+E` | Export ZIP |
-| `Ctrl+O` | Import ZIP |
+| `Ctrl+O` | Open `.denpa` |
 | `Delete` | Remove selected notes |
 | `,` / `.` | Nudge selection by snap unit |
 | `<` / `>` | Nudge selection by a beat |
-
-## Tests
-
-```bash
-cd python_editor
-.venv\Scripts\python -m pip install -e .[test]
-.venv\Scripts\python -m pytest tests
-```
 
 *Disclaimer: This project contains AI-generated code.*
