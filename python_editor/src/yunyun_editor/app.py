@@ -154,7 +154,7 @@ class NewProjectDialog(simpledialog.Dialog):
             "composer": tk.StringVar(),
             "arranger": tk.StringVar(),
             "audio_path": tk.StringVar(),
-            "editor": tk.StringVar(value="Beatmap Name"),
+            "editor": tk.StringVar(value="Beatmap Author"),
             "difficulty": tk.StringVar(value="1"),
             "level_slot": tk.StringVar(value="1"),
             "init_bpm": tk.StringVar(value="120.0"),
@@ -169,7 +169,7 @@ class NewProjectDialog(simpledialog.Dialog):
             ("Lyricist", "lyricist"),
             ("Composer", "composer"),
             ("Arranger", "arranger"),
-            ("Beatmap Name", "editor"),
+            ("Beatmap Author", "editor"),
             ("Difficulty", "difficulty"),
             ("Level slot", "level_slot"),
             ("Init BPM", "init_bpm"),
@@ -230,12 +230,12 @@ class LevelInfoDialog(simpledialog.Dialog):
     def body(self, master: tk.Widget) -> tk.Widget:
         self.title("Add Level")
         self.vars = {
-            "editor": tk.StringVar(value="Beatmap Name"),
+            "editor": tk.StringVar(value="Beatmap Author"),
             "difficulty": tk.StringVar(value="1"),
             "level_slot": tk.StringVar(value="1"),
         }
         first: tk.Widget | None = None
-        for row_idx, (label, key) in enumerate([("Beatmap Name", "editor"), ("Difficulty", "difficulty"), ("Level slot", "level_slot")]):
+        for row_idx, (label, key) in enumerate([("Beatmap Author", "editor"), ("Difficulty", "difficulty"), ("Level slot", "level_slot")]):
             ttk.Label(master, text=label).grid(row=row_idx, column=0, sticky="w", padx=6, pady=3)
             entry = ttk.Entry(master, textvariable=self.vars[key], width=28)
             entry.grid(row=row_idx, column=1, sticky="ew", padx=6, pady=3)
